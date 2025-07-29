@@ -1,4 +1,7 @@
-from typing import Any, Optional, Union, Tuple, Callable
+import os
+from typing import Any, Optional, Union, Tuple, Callable, TypeVar
+from pathlib import Path
+import warnings
 
 from numpy.typing import ArrayLike
 import numpy as np
@@ -14,6 +17,8 @@ from .peaks import around_max_peak_fit
 
 __all__ = ["SpectraFrame"]
 
+PathLike = TypeVar("PathLike", str, os.PathLike)
+
 
 def _is_empty_slice(param: Any) -> bool:
     """Is `param` an empty slice"""
@@ -27,7 +32,7 @@ def _is_empty_slice(param: Any) -> bool:
 
 def _parse_getitem_single_selector(
     index: pd.Index, selector: Any, iloc: bool = False
-) -> Union[slice, np.array]:
+) -> Union[slice, np.ndarray]:
     """
     Parse a single selector for indexing.
 
@@ -118,7 +123,7 @@ class SpectraFrame:
         self,
         spc: ArrayLike,
         wl: Optional[ArrayLike] = None,
-        data: Optional[pd.DataFrame] = None,
+        data: Union[pd.DataFrame, pd.Series, dict] = None,
     ) -> None:
         """Create a new SpectraFrame object
 
@@ -189,6 +194,59 @@ class SpectraFrame:
         self.spc = spc
         self.wl = wl
         self.data = data
+
+    @classmethod
+    def fromfile(
+        cls, path: PathLike, format: Optional[str] = None, **kwargs
+    ) -> "SpectraFrame":
+        path: Path = Path(path)
+
+        # Guess the format if not provided
+        if format is None:
+            format = path.suffix.strip(".").lower()
+            if format == "pkl":
+                format = "pickle"
+
+        # Get corresponding pandas read function
+        read_func = getattr(pd, f"read_{format}", None)
+        if read_func is None:
+            raise ValueError(f"Unsupported file format: {format}")
+
+        # Read the file
+        df = read_func(path, **kwargs)
+
+        if isinstance(df.columns, pd.MultiIndex):
+            # One type of export where data is stores as multiindex
+            # (spc, ...) -> for spectra, (data, ...) -> for data
+            sf = cls(
+                spc=df["spc"],
+                wl=df["spc"].columns.values,
+                data=df["data"],
+            )
+        else:
+            # Another type of export where data is stored as single index
+            # First `nwl` columns are wavelengths, the rest are data
+            # To get `nwl` we check all numeric column names
+            nwl = np.where(
+                [not str(col).strip("-")[0].isdigit() for col in df.columns]
+            )[0][0]
+            sf = cls(
+                df.iloc[:, :nwl].values,
+                df.columns[:nwl],
+                data=df.iloc[:, nwl:],
+            )
+
+        # Try to convert wl to float
+        try:
+            sf.wl = sf.wl.astype(float)
+        except ValueError:
+            warnings.warn(
+                f"Reading {path.stem}: Could not convert wavelengths to float. "
+                f"Values: {sf.wl}. "
+                "Keeping them as strings."
+            )
+
+        return sf
 
     # ----------------------------------------------------------------------
     # Internal helpers
@@ -317,7 +375,7 @@ class SpectraFrame:
         ValueError
             If the provided slicer is not valid
         """
-        if not ((type(slicer) == tuple) and (len(slicer) in [3, 4])):
+        if not (isinstance(slicer, tuple) and (len(slicer) in [3, 4])):
             raise ValueError(
                 "Invalid subset value. Provide 3 values in format <row, column, wl>"
                 "or 4 values in format <row, column, wl, True/False>"
@@ -482,6 +540,14 @@ class SpectraFrame:
         2    6    7    8  12
 
         >>> # Add a column
+        >>> sf["B"] = [1, 2, 3]
+        >>> print(sf)
+           400  500  600   A  B
+        0    0    1    2  10  1
+        1    3    4    5  11  2
+        2    6    7    8  12  3
+
+        >>> # Edit a column
         >>> sf["B"] = [20, 21, 22]
         >>> print(sf)
            400  500  600   A   B
@@ -519,7 +585,8 @@ class SpectraFrame:
         ValueError: Invalid slicing...
         """
         if isinstance(given, str):
-            return self.data.__setitem__(given, value)
+            self.data.loc[:, given] = value
+            return
 
         row_slice, col_slice, wl_slice = self._parse_getitem_tuple(given)
         if _is_empty_slice(col_slice) and not _is_empty_slice(wl_slice):
@@ -693,7 +760,7 @@ class SpectraFrame:
         else:
             raise ValueError(f"Unexpected `axis` value {axis}")
 
-    def _get_groupby(self, groupby) -> list[str]:
+    def _get_groupby(self, groupby) -> Union[list[str], None]:
         """Format and validate groupby value"""
         if groupby is None:
             return None
@@ -713,7 +780,7 @@ class SpectraFrame:
         self,
         func: Union[str, Callable],
         *args,
-        data: np.ndarray = None,
+        data: Optional[np.ndarray] = None,
         axis: int = 1,
         **kwargs,
     ) -> np.ndarray:
@@ -775,7 +842,7 @@ class SpectraFrame:
 
     def apply(
         self,
-        func: Union[str, callable],
+        func: Union[str, Callable],
         *args,
         groupby: Union[str, list[str], None] = None,
         axis: int = 0,
@@ -917,7 +984,7 @@ class SpectraFrame:
         self,
         method: str,
         ignore_na: bool = True,
-        peak_range: Optional[Tuple[int]] = None,
+        peak_range: Optional[tuple[float, float]] = None,
         **kwargs,
     ) -> "SpectraFrame":
         """Dispatcher for spectra normalization
@@ -953,7 +1020,7 @@ class SpectraFrame:
             spc = spc / spc.area()
         elif method == "peak":
             if peak_range is None:
-                peak_range = (self.wl[0], self.wl[-1])
+                peak_range: tuple[float, float] = (self.wl[0], self.wl[-1])
 
             peak_intensities = around_max_peak_fit(
                 x=self[:, :, peak_range[0] : peak_range[1]].wl,
@@ -1133,7 +1200,7 @@ class SpectraFrame:
         rows=None,
         columns=None,
         colors=None,
-        palette: Optional[list[str]] = None,
+        palette: Union[list[str], str, None] = None,
         fig=None,
         **kwargs: Any,
     ):
@@ -1163,7 +1230,7 @@ class SpectraFrame:
             palette = [
                 rgb2hex(plt.get_cmap(palette, ncolors)(i)) for i in range(ncolors)
             ]
-
+        assert isinstance(palette, list)
         cmap = dict(zip(colorby_series.cat.categories, palette[:ncolors]))
         cmap.update({"NA": "gray"})
         colors_series = colorby_series.cat.rename_categories(cmap)

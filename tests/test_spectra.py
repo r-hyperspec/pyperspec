@@ -3,7 +3,7 @@ import pandas as pd
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal, assert_series_equal
 import pytest
-
+from pathlib import Path
 from pyspc import SpectraFrame
 from pyspc.testing import assert_spectraframe_equal
 
@@ -667,3 +667,53 @@ class TestSpectaFrameNormalize:
 
         result = sf.normalize("peak", peak_range=(800, 1200))
         np.testing.assert_almost_equal(np.max(result[:, :, 800:1200].spc, axis=1), 1)
+
+
+class TestSpectraFrameFromFile:
+    def sample_spectra_frame(self) -> SpectraFrame:
+        # Create a dummy SpectraFrame
+        sf = SpectraFrame(
+            spc=np.array([[1, 2, 3], [4, 5, 6]]),
+            wl=np.array([400, 500, 600]),
+            data=pd.DataFrame(
+                {
+                    "sample": ["A", "B"],
+                    "type": ["X", "Y"],
+                }
+            ),
+        )
+        return sf
+
+    def test_csv(self, tmp_path):
+        sf = self.sample_spectra_frame()
+        out_path: Path = tmp_path / "test.csv"
+
+        sf.to_pandas(multiindex=False).to_csv(out_path, index=False)
+        assert out_path.exists()
+
+        sf_imported = SpectraFrame.fromfile(out_path)
+
+        assert_array_equal(sf_imported.wl, sf.wl)
+        assert_array_equal(sf_imported.spc, sf.spc)
+        assert_frame_equal(sf_imported.data, sf.data)
+
+    def test_pickle(self, tmp_path):
+        sf = self.sample_spectra_frame()
+        multi_index = [False, True]
+        string_names = [False, True]
+
+        for mi in multi_index:
+            for sn in string_names:
+                out_path: Path = tmp_path / f"test_{sn}_{mi}.pkl"
+
+                # Export to a temporary file
+                sf.to_pandas(string_names=sn, multiindex=mi).to_pickle(out_path)
+                assert out_path.exists()
+
+                # Read with fromfile
+                sf_imported = SpectraFrame.fromfile(out_path)
+
+                # Verify correct loading
+                assert_array_equal(sf_imported.wl, sf.wl)
+                assert_array_equal(sf_imported.spc, sf.spc)
+                assert_frame_equal(sf_imported.data, sf.data)
