@@ -98,10 +98,14 @@ second_deriv = sf.apply(lambda x: ndimage.gaussian_filter1d(x, sigma=1, order=2)
 
 ## Metadata Manipulation
 
-### Adding New Columns
+### Adding and Removing Columns
 ```python
 # Simple assignment
 sf['new_column'] = ['A', 'B', 'C', 'A', 'B']
+# Same but using assign. This is useful for chaining operations.
+sf = sf.assign(new_column=lambda x: x['group'] + '_new')
+# Similarly, we can remove columns
+sf = sf.drop(columns=['new_column'])
 
 # Calculated columns
 sf['total_intensity'] = sf.spc.sum(axis=1)

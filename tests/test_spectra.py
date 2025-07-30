@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
-from pandas.testing import assert_frame_equal, assert_series_equal
+from pandas.testing import assert_frame_equal, assert_series_equal, assert_index_equal
 import pytest
 from pathlib import Path
 from pyspc import SpectraFrame
@@ -378,6 +378,166 @@ class TestSpectraFrameAttrs:
         frame = self.sample_spectra_frame()
 
         assert_series_equal(frame.A, frame.data.A)
+        assert_index_equal(frame.index, frame.data.index)
+        assert_index_equal(frame.columns, frame.data.columns)
+        with pytest.raises(AttributeError):
+            _ = frame.non_existent_attr
+
+
+class TestSpectraFrameAssign:
+    def sample_spectra_frame(self) -> SpectraFrame:
+        spc = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+        wl = np.array([400, 500, 600])
+        data = pd.DataFrame(
+            {"A": [10, 11, 12], "B": [13, 14, 15]},
+            index=[5, 6, 7],
+        )
+        return SpectraFrame(spc, wl, data)
+
+    def test_assign_new_column(self):
+        """Test assigning a new column to SpectraFrame"""
+        frame = self.sample_spectra_frame()
+        original_shape = frame.data.shape
+
+        # Assign a new column
+        result = frame.assign(C=[100, 200, 300])
+
+        # Check that a new frame is returned (assign no longer modifies original)
+        assert result is not frame
+        assert frame.data.shape == original_shape
+        assert "C" not in frame.data.columns
+
+        # Check that the result has the new column
+        assert result.data.shape == (original_shape[0], original_shape[1] + 1)
+        assert "C" in result.data.columns
+        assert_array_equal(result.data["C"].values, [100, 200, 300])
+
+    def test_reassign_existing_column(self):
+        """Test reassigning an existing column in SpectraFrame"""
+        frame = self.sample_spectra_frame()
+        original_shape = frame.data.shape
+        original_a_values = frame.A.values.copy()
+
+        # Assign to an existing column
+        result = frame.assign(A=[100, 200, 300])
+
+        # Check that a new frame is returned (assign no longer modifies original)
+        assert result is not frame
+        assert frame.data.shape == original_shape
+        assert_array_equal(frame.A.values, original_a_values)
+
+        # Check that the result has the modified column
+        assert result.data.shape == original_shape
+        assert_index_equal(result.data.columns, pd.Index(["A", "B"]))
+        assert_array_equal(result.A.values, [100, 200, 300])
+
+    def test_assign_multiple_columns(self):
+        """Test assigning multiple new columns to SpectraFrame"""
+        frame = self.sample_spectra_frame()
+
+        # Assign multiple columns
+        result = frame.assign(C=[100, 200, 300], D=["X", "Y", "Z"])
+
+        # Check that original frame is unchanged
+        assert "C" not in frame.data.columns
+        assert "D" not in frame.data.columns
+
+        # Check that result has the new columns
+        assert "C" in result.data.columns
+        assert "D" in result.data.columns
+        assert_array_equal(result.data["C"].values, [100, 200, 300])
+        assert_array_equal(result.data["D"].values, ["X", "Y", "Z"])
+
+    def test_assign_spectral_data_unchanged(self):
+        """Test that assign doesn't modify spectral data or wavelengths"""
+        frame = self.sample_spectra_frame()
+        original_spc = frame.spc.copy()
+        original_wl = frame.wl.copy()
+
+        frame.assign(new_col=[1, 2, 3])
+
+        # Spectral data and wavelengths should remain unchanged
+        assert_array_equal(frame.spc, original_spc)
+        assert_array_equal(frame.wl, original_wl)
+
+
+class TestSpectraFrameDrop:
+    def sample_spectra_frame(self) -> SpectraFrame:
+        spc = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+        wl = np.array([400, 500, 600])
+        data = pd.DataFrame(
+            {"A": [10, 11, 12], "B": [13, 14, 15], "C": [16, 17, 18]},
+            index=[5, 6, 7],
+        )
+        return SpectraFrame(spc, wl, data)
+
+    def test_drop_single_column(self):
+        """Test dropping a single column from SpectraFrame"""
+        frame = self.sample_spectra_frame()
+        original_shape = frame.data.shape
+
+        # Drop a single column
+        result = frame.drop("C")
+
+        # Check that the original frame is unchanged
+        assert result is not frame
+        assert frame.data.shape == original_shape
+        assert "C" in frame.data.columns
+
+        # Check that the result has the column dropped
+        assert result.data.shape == (original_shape[0], original_shape[1] - 1)
+        assert "C" not in result.data.columns
+        assert "A" in result.data.columns
+        assert "B" in result.data.columns
+
+    def test_drop_multiple_columns(self):
+        """Test dropping multiple columns from SpectraFrame"""
+        frame = self.sample_spectra_frame()
+
+        # Drop multiple columns
+        result = frame.drop(["A", "C"])
+
+        # Check original frame is unchanged
+        assert "A" in frame.data.columns
+        assert "C" in frame.data.columns
+
+        # Check result has columns dropped
+        assert "A" not in result.data.columns
+        assert "C" not in result.data.columns
+        assert "B" in result.data.columns
+        assert result.data.shape[1] == 1
+
+    def test_drop_all_columns(self):
+        """Test dropping all columns from SpectraFrame"""
+        frame = self.sample_spectra_frame()
+        original_shape = frame.data.shape
+
+        # Drop all columns
+        result = frame.drop(["A", "B", "C"])
+
+        # Check that the original frame is unchanged
+        assert frame.data.shape == original_shape
+        assert len(frame.data.columns) == 3
+
+        # Check that the result has no columns
+        assert result.data.shape[1] == 0
+        assert len(result.data.columns) == 0
+
+    def test_drop_spectral_data_unchanged(self):
+        """Test that drop doesn't modify spectral data or wavelengths"""
+        frame = self.sample_spectra_frame()
+        original_spc = frame.spc.copy()
+        original_wl = frame.wl.copy()
+
+        result = frame.drop("A")
+
+        # Original frame's spectral data and wavelengths should remain unchanged
+        assert_array_equal(frame.spc, original_spc)
+        assert_array_equal(frame.wl, original_wl)
+
+        # Result's spectral data and wavelengths should be the same as original
+        assert_array_equal(result.spc, original_spc)
+        assert_array_equal(result.wl, original_wl)
 
 
 class TestSpectraFrameApply:

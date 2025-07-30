@@ -600,7 +600,13 @@ class SpectraFrame:
             )
 
     def __getattr__(self, name) -> pd.Series:
-        return getattr(self.data, name)
+        if name in self.data.columns:
+            return self.data[name]
+        if name in ["index"]:
+            return self.data.index
+        if name in ["columns"]:
+            return self.data.columns
+        super().__getattr__(name)
 
     def query(self, expr: str) -> "SpectraFrame":
         """Filter spectra using pandas DataFrame.query
@@ -632,6 +638,90 @@ class SpectraFrame:
         """
         indices = self.data.query(expr).index
         return self[indices, :, :]
+
+    def assign(self, **kwargs) -> "SpectraFrame":
+        """Assign new columns to a SpectraFrame.
+
+        Returns a new SpectraFrame with the assigned columns.
+
+        Parameters
+        ----------
+        **kwargs
+            Column assignments, same as pandas DataFrame.assign()
+
+        Returns
+        -------
+        SpectraFrame
+            A new SpectraFrame with the assigned columns
+
+        Examples:
+        --------
+        >>> np.random.seed(42)
+        >>> sf = SpectraFrame(np.random.rand(4, 5), data={"group": list("AABB")})
+        >>> print(sf)
+                  0  ...         4 group
+        0  0.374540  ...  0.156019     A
+        1  0.155995  ...  0.708073     A
+        2  0.020584  ...  0.181825     B
+        3  0.183405  ...  0.291229     B
+        >>> sf_new = sf.assign(new_col=lambda x: x.group == "A")
+        >>> print(sf_new)
+                  0  ...         4 group  new_col
+        0  0.374540  ...  0.156019     A     True
+        1  0.155995  ...  0.708073     A     True
+        2  0.020584  ...  0.181825     B    False
+        3  0.183405  ...  0.291229     B    False
+        """
+        new_sf = self.copy()
+        new_sf.data = new_sf.data.assign(**kwargs)
+        return new_sf
+
+    def drop(self, columns) -> "SpectraFrame":
+        """Drop specified columns from the SpectraFrame.
+
+        Returns a new SpectraFrame with the specified columns dropped.
+
+        Parameters
+        ----------
+        columns : str or list of str
+            Column name(s) to drop from the data
+
+        Returns
+        -------
+        SpectraFrame
+            A new SpectraFrame with specified columns dropped
+
+        Examples
+        --------
+        >>> np.random.seed(42)
+        >>> sf = SpectraFrame(
+        ...     np.random.rand(4, 5),
+        ...     data={"group": list("AABB"), "type": list("XYXY")}
+        ... )
+        >>> print(sf)
+                  0  ...         4 group type
+        0  0.374540  ...  0.156019     A    X
+        1  0.155995  ...  0.708073     A    Y
+        2  0.020584  ...  0.181825     B    X
+        3  0.183405  ...  0.291229     B    Y
+        >>> sf_new = sf.drop("type")
+        >>> print(sf_new)
+                  0  ...         4 group
+        0  0.374540  ...  0.156019     A
+        1  0.155995  ...  0.708073     A
+        2  0.020584  ...  0.181825     B
+        3  0.183405  ...  0.291229     B
+        >>> sf_new2 = sf.drop(["group", "type"])
+        >>> print(sf_new2)
+                  0  ...         4
+        0  0.374540  ...  0.156019
+        1  0.155995  ...  0.708073
+        2  0.020584  ...  0.181825
+        3  0.183405  ...  0.291229
+        """
+        new_sf = self.copy()
+        new_sf.data = new_sf.data.drop(columns=columns)
+        return new_sf
 
     # ----------------------------------------------------------------------
     # Arithmetic operations +, -, *, /, **, abs, round, ceil, etc.
