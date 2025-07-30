@@ -708,6 +708,18 @@ class SpectraFrame:
     def __trunc__(self) -> "SpectraFrame":
         return SpectraFrame(spc=np.trunc(self.spc), wl=self.wl, data=self.data)
 
+    def __array__(self) -> np.ndarray:
+        """Return spectral data when converted to numpy array
+
+        This method is called when np.array(sf) is used on a SpectraFrame object.
+
+        Returns
+        -------
+        np.ndarray
+            The spectral data array (self.spc)
+        """
+        return self.spc
+
     # ----------------------------------------------------------------------
     # Wavelengths
 

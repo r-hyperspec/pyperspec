@@ -161,6 +161,11 @@ class TestSpectraFrameMath:
         result = sf.__trunc__()
         assert np.array_equal(result.spc, np.trunc(sf.spc))
 
+        # Test __array__
+        result = np.array(sf)
+        assert np.array_equal(result, sf.spc)
+        assert result is not sf.spc  # Ensure it's a copy, not the same object
+
 
 class TestSpectraFrameCopy:
     def sf(self) -> SpectraFrame:

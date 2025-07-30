@@ -213,7 +213,7 @@ def around_max_peak_fit(
     y : np.ndarray
         Either 1D numeric (vector) or a 2D matrix of `y` values for the peak fitting.
         If 2D matrix is given then signals are assumed to be in rows.
-    fit_function : str | Callable
+    fit_func : str | Callable
         Fitting function. Must be one of:
 
         * 'max' (default) - returns location of maximum position and value

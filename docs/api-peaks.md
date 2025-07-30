@@ -1,0 +1,3 @@
+# Peaks Module
+
+::: pyspc.peaks

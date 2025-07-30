@@ -1,9 +1,10 @@
 import numpy as np
-from scipy.interpolate import interp1d
 
 # from scipy import stats, signal
 
-from .utils import is_iqr_outlier
+from .utils import is_iqr_outlier, fillna
+
+__all__ = ["find_spikes"]
 
 # def spikes_find_ryabchykov(y: np.array):
 #     deltaS = np.diff(y, n=2, axis=1, prepend=y[:, [1]], append=y[:, [-2]])
@@ -29,34 +30,6 @@ from .utils import is_iqr_outlier
 #
 #     is_spiky = np.zeros(y.shape).astype(bool)
 #     spiky_rows = np.where(r < x_kde[i_threshold])
-
-
-def _fillna(y: np.ndarray) -> np.ndarray:
-    """
-    Fills NaN values in an array using linear interpolation.
-
-    Parameters:
-        y : np.ndarray
-            The input array to fill NaN values.
-
-    Returns:
-        np.ndarray
-            The array with NaN values filled using linear interpolation.
-    """
-    x = np.arange(len(y))
-    is_nan = np.isnan(y)
-
-    if np.any(is_nan):
-        interpolator = interp1d(
-            x=x[~is_nan],
-            y=y[~is_nan],
-            bounds_error=False,
-            fill_value="extrapolate",
-            assume_sorted=True,
-        )
-        return interpolator(x)
-
-    return y
 
 
 def _span_spikes(y: np.ndarray, is_spike: np.ndarray, w: int = 5) -> np.ndarray:
@@ -105,7 +78,7 @@ def find_spikes(
     ----------
     y : np.ndarray
         Input data 1D array of a single spectrum or 2D matrix (spectra in rows)
-    n_diff : int, optional
+    ndiff : int, optional
         Order of differentiation, by default 1
     method : str, optional
         Outlier detection method, by default "zscore"
@@ -171,7 +144,7 @@ def find_spikes(
         # Recursively keep searching untill all spikes are cleaned
         spiky_y = y[is_spiky_row, :].copy()
         spiky_y[is_spiky_mat[is_spiky_row, :]] = np.nan
-        spiky_y = np.apply_along_axis(_fillna, axis=1, arr=spiky_y)
+        spiky_y = np.apply_along_axis(fillna, axis=1, arr=spiky_y)
 
         is_spiky_mat[is_spiky_row, :] = np.bitwise_or(
             is_spiky_mat[is_spiky_row, :],

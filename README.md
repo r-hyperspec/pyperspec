@@ -28,7 +28,7 @@ and more can be found in [FOSS For Spectroscopy](https://bryanhanson.github.io/F
 
 Rather, it provides convinient interface for those algorithms and other routine tasks.
 
-For detailed information and documentation, please visit [PyPerSpec Documentation](#TODO).
+For detailed information and documentation, please visit [Documentation](https://r-hyperspec.github.io/pyperspec/).
 
 ## Documentation
 
@@ -49,30 +49,30 @@ import pyspc
 import numpy as np
 import pandas as pd
 
-spc = np.random.rand(10, 20) # Here is you spectra in unfolded structure
+spc = np.random.rand(10, 20) # Here are your spectra in unfolded structure
 wl = np.linspace(1000,2000,20) # Array of wavelength/wavenumbers
-meta_data = pd.DataFrame({"group": ..., "date": ...,}) # Additional meta-data
+meta_data = pd.DataFrame({"group": ["A", "B"] * 5, "date": pd.date_range("2023-01-01", periods=10)}) # Additional meta-data
 
 # Create the object
-sf = pyspc.SpectraFrame(spc, wl=wl, data=data)
+sf = pyspc.SpectraFrame(spc, wl=wl, data=meta_data)
 
 # Easy meta-data manipulation
 sf.A
 sf["A"]
-sf["E"] = ...
+sf["group"] = ["Control", "Treatment"] * 5
 
 # Easy data slicing/filtering, similar to hyperSpec
-sf[:,:,500:1000] # Cut wavelenght range to [500, 1000]
+sf[:,:,500:1000] # Cut wavelength range to [500, 1000]
 sf[:5,:,:5, True] # Use iloc style to get only first five spectra and first five wavenumbers
 sf.query("group == 'Control'") # Get only 'Control' group
 
 # Simple aggregation even with custom methods
 sf[:,:,500:1000].mean(groupby=["group", "date"])
-sf.query("group = 'Control'").apply(lamda x: np.sum(x**2), axis=0)
+sf.query("group == 'Control'").apply(lambda x: np.sum(x**2), axis=0)
 
 # Chaining methods
 sf_processed = (
-    sf.query("group = 'Control'")
+    sf.query("group == 'Control'")
     .mean(groupby="date")
     .smooth("savgol", window_length=7, polyorder=2)
     .sbaseline("rubberband")

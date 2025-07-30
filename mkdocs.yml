@@ -1,6 +1,8 @@
-site_name: pyperspec
-
+site_name: pyperSpec Documentation
+site_description: Python package for hyperspectral data analysis
+site_url: https://r-hyperspec.github.io/pyperspec/
 repo_url: https://github.com/r-hyperspec/pyperspec
+repo_name: r-hyperspec/pyperspec
 
 # See https://squidfunk.github.io/mkdocs-material/setup/ for more options
 theme:
@@ -60,18 +62,28 @@ plugins:
             members_order: source
 
 markdown_extensions:
+  - attr_list
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
   - pymdownx.pathconverter
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
-  - pymdownx.superfences
   - pymdownx.snippets:
       base_path:
       - docs
       - README.md
       check_paths: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+  - tables
 
 watch:
   - docs
@@ -80,7 +92,19 @@ watch:
 
 nav:
   - Home: index.md
-  # - Installation: installation.md
-  # - Tutorial: tutorial.md
+  - Getting Started:
+    - Installation: installation.md
+    - Quick Start: quickstart.md
+    - Basic Concepts: concepts.md
+  - User Guide:
+    - Data Manipulation: user-guide/manipulation.md
+    - Preprocessing: user-guide/preprocessing.md
+    - Visualization: user-guide/visualization.md
+    - Import/Export: user-guide/io.md
+  # - Examples:
+  #   - Basic Usage: examples/basic.md
   - API Reference:
     - SpectraFrame: api-spectraframe.md
+    - Peaks: api-peaks.md
+    - Spikes: api-spikes.md
+    - Utils: api-utils.md
