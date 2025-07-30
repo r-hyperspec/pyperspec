@@ -220,8 +220,3 @@ for ax in axs.flat:
     ax.grid(True, alpha=0.3)
 ```
 
-## Interactive Examples
-
-For hands-on practice with these visualization features, see the [interactive Jupyter notebook](../examples/visualization_examples.ipynb) that includes all the examples shown above with reproducible code.
-
-
