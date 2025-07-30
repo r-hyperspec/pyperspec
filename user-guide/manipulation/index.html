@@ -595,9 +595,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#adding-new-columns" class="md-nav__link">
+  <a href="#adding-and-removing-columns" class="md-nav__link">
     <span class="md-ellipsis">
-      Adding New Columns
+      Adding and Removing Columns
     </span>
   </a>
   
@@ -1032,9 +1032,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#adding-new-columns" class="md-nav__link">
+  <a href="#adding-and-removing-columns" class="md-nav__link">
     <span class="md-ellipsis">
-      Adding New Columns
+      Adding and Removing Columns
     </span>
   </a>
   
@@ -1208,16 +1208,20 @@
 </span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">second_deriv</span> <span class="o">=</span> <span class="n">sf</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">ndimage</span><span class="o">.</span><span class="n">gaussian_filter1d</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">sigma</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="mi">2</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="metadata-manipulation">Metadata Manipulation<a class="headerlink" href="#metadata-manipulation" title="Permanent link">&para;</a></h2>
-<h3 id="adding-new-columns">Adding New Columns<a class="headerlink" href="#adding-new-columns" title="Permanent link">&para;</a></h3>
+<h3 id="adding-and-removing-columns">Adding and Removing Columns<a class="headerlink" href="#adding-and-removing-columns" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Simple assignment</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;new_column&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;A&#39;</span><span class="p">,</span> <span class="s1">&#39;B&#39;</span><span class="p">,</span> <span class="s1">&#39;C&#39;</span><span class="p">,</span> <span class="s1">&#39;A&#39;</span><span class="p">,</span> <span class="s1">&#39;B&#39;</span><span class="p">]</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Calculated columns</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;peak_ratio&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="p">[:,</span> <span class="p">:,</span> <span class="mi">1450</span><span class="p">]</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span> <span class="o">/</span> <span class="n">sf</span><span class="p">[:,</span> <span class="p">:,</span> <span class="mi">1000</span><span class="p">]</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># Same but using assign. This is useful for chaining operations.</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">sf</span> <span class="o">=</span> <span class="n">sf</span><span class="o">.</span><span class="n">assign</span><span class="p">(</span><span class="n">new_column</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;group&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="s1">&#39;_new&#39;</span><span class="p">)</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># Similarly, we can remove columns</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">sf</span> <span class="o">=</span> <span class="n">sf</span><span class="o">.</span><span class="n">drop</span><span class="p">(</span><span class="n">columns</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;new_column&#39;</span><span class="p">])</span>
 </span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># Conditional columns</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;high_intensity&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">median</span><span class="p">()</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># Calculated columns</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;peak_ratio&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="p">[:,</span> <span class="p">:,</span> <span class="mi">1450</span><span class="p">]</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span> <span class="o">/</span> <span class="n">sf</span><span class="p">[:,</span> <span class="p">:,</span> <span class="mi">1000</span><span class="p">]</span><span class="o">.</span><span class="n">spc</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="c1"># Conditional columns</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="n">sf</span><span class="p">[</span><span class="s1">&#39;high_intensity&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">sf</span><span class="p">[</span><span class="s1">&#39;total_intensity&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">median</span><span class="p">()</span>
 </span></code></pre></div>
 <h3 id="metadata-from-external-sources">Metadata from External Sources<a class="headerlink" href="#metadata-from-external-sources" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Merge with external data</span>
