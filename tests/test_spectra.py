@@ -112,8 +112,8 @@ class TestSpectraFrameMath:
             sf_res = op(sf, sf2)
             assert_the_rest_did_not_change()
             assert_array_equal(sf_res.spc, op(spc, spc2))
-        elif side == "rigth":
-            sf_res = op(10, sf_res)
+        elif side == "right":
+            sf_res = op(10, sf)
             assert_the_rest_did_not_change()
             assert_array_equal(sf_res.spc, op(10, spc))
 
