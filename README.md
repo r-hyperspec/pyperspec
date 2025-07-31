@@ -1,5 +1,6 @@
 [![Project Status: WIP – Initial development is in progress, but there has not yet been a stable release yet.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
-
+[![codecov](https://codecov.io/gh/r-hyperspec/pyperspec/graph/badge.svg?token=P12AJV4JHC)](https://codecov.io/gh/r-hyperspec/pyperspec)
+[![License](https://img.shields.io/github/license/r-hyperspec/pyperspec.svg)](https://github.com/r-hyperspec/pyperspec/blob/main/LICENSE)
 
 # Python Package pyperspec
 
