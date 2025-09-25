@@ -11,7 +11,7 @@ These methods can be chained together to create complex preprocessing pipelines.
 
 Baseline correction removes systematic drift and background signals from spectra. 
 [pybaselines](https://pybaselines.readthedocs.io/en/latest/) is a rich package of baseline correction methods. Basically, `SpectraFrame.baseline()` method provides a bridge to the `pybaselines` methods.
-General interface is `SpectraFrame.baseline(method, **kwargs)`, where `method` is the baseline correction algorithm and `**kwargs` are method-specific parameters.
+General interface is `SpectraFrame.baseline(method, n_jobs=1, **kwargs)`, where `method` is the baseline correction algorithm, `n_jobs` controls parallel processing, and `**kwargs` are method-specific parameters.
 Full list of available methods and parameters can be found in the [pybaselines docs](https://pybaselines.readthedocs.io/en/latest/).
 Here are some examples:
 
@@ -29,6 +29,9 @@ baseline_airpls = sf.baseline("airpls", lam=1e5)
 
 # SNIP (Statistics-sensitive Non-linear Iterative Peak-clipping)
 baseline_snip = sf.baseline("snip", max_half_window=40)
+
+# For faster processing of large datasets, use multi-threading
+baseline_threaded = sf.baseline("airpls", n_jobs=4, lam=1e5)
 ```
 
 To subtract the baseline from your spectra, you can use the `-` operator:
@@ -43,7 +46,28 @@ Or, for convenience, use `sbaseline()` (short for `subtract_baseline()`) to dire
 ```python
 # Equivalent to the above subtraction
 corrected_spectra = sf.sbaseline("airpls", lam=1e5)
+
+# With multi-threading for faster processing
+corrected_spectra = sf.sbaseline("airpls", n_jobs=4, lam=1e5)
 ```
+
+## Performance Optimization
+
+For large datasets with many spectra, you can use multi-threading to speed up baseline correction:
+
+```python
+# Sequential processing (default)
+baseline = sf.baseline("airpls", lam=1e5)
+
+# Parallel processing with 4 threads
+baseline = sf.baseline("airpls", n_jobs=4, lam=1e5)
+
+# Auto-detect number of CPU cores (use with caution)
+import os
+baseline = sf.baseline("airpls", n_jobs=os.cpu_count(), lam=1e5)
+```
+
+**Note**: Multi-threading is most beneficial for computationally intensive baseline methods and large datasets. The optimal number of jobs depends on your system and the specific method used.
 
 It is recommended to test baseline correction methods on a subset of your data before applying them to the entire dataset.
 
@@ -71,8 +95,8 @@ ax.legend()
 plt.show()
 
 # Finally use the best method on the entire dataset
-# For example, let's use rubberband method
-spc_nobl = spc.smooth("savgol", window_length=11, polyorder=2).sbaseline(method="rubberband")
+# For example, let's use rubberband method with multi-threading for speed
+spc_nobl = spc.smooth("savgol", window_length=11, polyorder=2).sbaseline(method="rubberband", n_jobs=4)
 
 # Plot after baseline removal
 spc_nobl.sample(10).plot(colors="index")
@@ -217,11 +241,11 @@ best_matches = sf.query("correlation > 0.95")
 `SpectraFrame` supports method chaining, allowing you to combine multiple preprocessing steps elegantly (as you would do with pandas DataFrames):
 
 ```python
-# More complex preprocessing pipeline
+# More complex preprocessing pipeline with multi-threading
 processed_sf = (sf
     .resample_wl(np.linspace(400, 4000, 1000))
     .smooth("savgol", window_length=7, polyorder=2)
-    .sbaseline("snip", max_half_window=40)
+    .sbaseline("snip", n_jobs=4, max_half_window=40)
     .normalize("peak", peak_range=(2800, 3000))
 )
 ```
