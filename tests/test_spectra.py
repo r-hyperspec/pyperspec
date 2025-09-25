@@ -807,6 +807,46 @@ class TestSpectraFrameBaseline:
         result = sf.sbaseline("rubberband")
         assert np.array_equal(result.spc[0, :], signal)
 
+    def test_baseline_threading(self):
+        """Test that baseline correction with threading produces identical results."""
+        wl = 400 + np.arange(0, 100, 2)
+        # Create test spectra with baseline
+        np.random.seed(42)
+        n_spectra = 10
+        signal = np.random.randn(n_spectra, len(wl))
+        bl = 10 + 5 * (wl - 400)
+        spectra_with_baseline = signal + bl
+        
+        sf = SpectraFrame(spectra_with_baseline, wl=wl)
+        
+        # Test that sequential and threaded processing give identical results
+        baseline_sequential = sf.baseline("rubberband", n_jobs=1)
+        baseline_threaded = sf.baseline("rubberband", n_jobs=4)
+        
+        # Results should be identical
+        np.testing.assert_array_equal(baseline_sequential.spc, baseline_threaded.spc)
+        np.testing.assert_array_equal(baseline_sequential.wl, baseline_threaded.wl)
+        pd.testing.assert_frame_equal(baseline_sequential.data, baseline_threaded.data)
+        
+        # Test sbaseline as well
+        sbaseline_sequential = sf.sbaseline("rubberband", n_jobs=1)
+        sbaseline_threaded = sf.sbaseline("rubberband", n_jobs=4)
+        
+        np.testing.assert_array_equal(sbaseline_sequential.spc, sbaseline_threaded.spc)
+        
+    def test_baseline_threading_single_spectrum(self):
+        """Test threading with single spectrum (edge case)."""
+        wl = 400 + np.arange(0, 10, 2)
+        signal = np.array([0, 5, 10, 5, 0])
+        bl = 10 + 5 * (wl - 400)
+        sf = SpectraFrame((signal + bl).reshape(1, -1), wl=wl)
+        
+        baseline_sequential = sf.baseline("rubberband", n_jobs=1)
+        baseline_threaded = sf.baseline("rubberband", n_jobs=4)
+        
+        # Results should be identical even with single spectrum
+        np.testing.assert_array_equal(baseline_sequential.spc, baseline_threaded.spc)
+
 
 class TestSpectaFrameNormalize:
     def test_normalize(self):

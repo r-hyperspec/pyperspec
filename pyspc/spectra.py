@@ -2,6 +2,7 @@ import os
 from typing import Any, Optional, Union, Tuple, Callable, TypeVar
 from pathlib import Path
 import warnings
+import concurrent.futures
 
 from numpy.typing import ArrayLike
 import numpy as np
@@ -884,6 +885,7 @@ class SpectraFrame:
         *args,
         data: Optional[np.ndarray] = None,
         axis: int = 1,
+        n_jobs: int = 1,
         **kwargs,
     ) -> np.ndarray:
         """Apply a function alog an axis
@@ -902,6 +904,10 @@ class SpectraFrame:
             different parts of the spctral data, e.g. when groupby is used
         axis : int, optional
             Standard axis. Same as in `numpy` or `pandas`, by default 1
+        n_jobs : int, optional
+            Number of parallel jobs for processing multiple spectra. If n_jobs > 1,
+            uses threading for parallel processing. Only effective when axis=1
+            and func is callable. Default is 1 (no parallelization).
 
         Returns
         -------
@@ -934,7 +940,28 @@ class SpectraFrame:
             if (res.ndim > 1) and (axis == 1):
                 res = res.T
         else:
-            res = np.apply_along_axis(func, axis, data, *args, **kwargs)
+            # Handle callable functions with optional threading support
+            if n_jobs > 1 and axis == 1 and data.shape[0] > 1:
+                # Use threading for parallel processing along axis=1 (multiple spectra)
+                def apply_to_row(row):
+                    return func(row, *args, **kwargs)
+                
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=n_jobs
+                ) as executor:
+                    # Submit each row (spectrum) as a separate task
+                    futures = [
+                        executor.submit(apply_to_row, data[i]) 
+                        for i in range(data.shape[0])
+                    ]
+                    # Collect results in order
+                    results = [future.result() for future in futures]
+                
+                # Convert results to numpy array and ensure proper shape
+                res = np.array(results)
+            else:
+                # Use standard numpy.apply_along_axis for non-threaded execution
+                res = np.apply_along_axis(func, axis, data, *args, **kwargs)
 
         # Reshape the result to keep dimenstions
         if res.ndim == 1:
@@ -948,6 +975,7 @@ class SpectraFrame:
         *args,
         groupby: Union[str, list[str], None] = None,
         axis: int = 0,
+        n_jobs: int = 1,
         **kwargs,
     ) -> "SpectraFrame":
         """Apply function to the spectral data
@@ -963,6 +991,10 @@ class SpectraFrame:
         axis : int, optional
              Standard axis. Same as in `numpy` or `pandas`, by default 1 when groupby
              is not provided, and 0 when provided.
+        n_jobs : int, optional
+            Number of parallel jobs for processing multiple spectra. If n_jobs > 1,
+            uses threading for parallel processing. Only effective when axis=1.
+            Default is 1 (no parallelization).
 
         Returns
         -------
@@ -984,7 +1016,7 @@ class SpectraFrame:
         new_data = self.data if axis == 1 else None
 
         if groupby is None:
-            new_spc = self._apply_func(func, *args, axis=axis, **kwargs)
+            new_spc = self._apply_func(func, *args, axis=axis, n_jobs=n_jobs, **kwargs)
         else:
             # Prepare a dataframe for groupby aggregation
             grouped = self.to_pandas().groupby(groupby, observed=True)[self.wl]
@@ -995,7 +1027,9 @@ class SpectraFrame:
 
             # Apply to each group
             spc_list = [
-                self._apply_func(func, *args, data=group.values, axis=0, **kwargs)
+                self._apply_func(
+                    func, *args, data=group.values, axis=0, n_jobs=n_jobs, **kwargs
+                )
                 for _, group in grouped
             ]
             data_list = [
@@ -1172,7 +1206,7 @@ class SpectraFrame:
 
         return spc
 
-    def baseline(self, method: str, **kwargs) -> "SpectraFrame":
+    def baseline(self, method: str, n_jobs: int = 1, **kwargs) -> "SpectraFrame":
         """Dispatcher for spectra baseline estimation
 
         Dispatches baseline correction to the corresponding method
@@ -1184,6 +1218,9 @@ class SpectraFrame:
         method : str
             A name of the method in `pybaselines` package (e.g. "airpls", "snip"),
             or "rubberband"
+        n_jobs : int, optional
+            Number of parallel jobs for processing multiple spectra. If n_jobs > 1,
+            uses threading for parallel processing. Default is 1 (no parallelization).
         kwargs: dict
             Additional parameters to pass to the baseline correction method
 
@@ -1198,9 +1235,15 @@ class SpectraFrame:
             Unknown baseline method provided
         """
         baseline_fitter = pybaselines.Baseline(x_data=self.wl)
-        if hasattr(baseline_fitter, method):
-            baseline_method = getattr(baseline_fitter, method)
-            baseline_func = lambda y: baseline_method(y, **kwargs)[0]
+        if hasattr(baseline_fitter, method):            
+            # Create a thread-safe baseline function that creates its own
+            # Baseline instance
+            def baseline_func(y):
+                # Create a new Baseline instance for thread safety
+                thread_baseline_fitter = pybaselines.Baseline(x_data=self.wl)
+                thread_baseline_method = getattr(thread_baseline_fitter, method)
+                return thread_baseline_method(y, **kwargs)[0]
+                
         elif method == "rubberband":
             baseline_func = lambda y: rubberband(self.wl, y, **kwargs)
         else:
@@ -1208,16 +1251,27 @@ class SpectraFrame:
                 "Unknown method. Method must be either "
                 "from `pybaselines` or 'rubberband'"
             )
-        return self.apply(baseline_func, axis=1)
+        return self.apply(baseline_func, axis=1, n_jobs=n_jobs)
 
-    def sbaseline(self, method: str, **kwargs) -> "SpectraFrame":
+    def sbaseline(self, method: str, n_jobs: int = 1, **kwargs) -> "SpectraFrame":
         """Subtract baseline from the spectra
 
         Same as `.baseline()`, but returns a new frame with subtracted baseline.
         A shortcut for `SpectraFrame - SpectraFrame.baseline(...)`, allowing
         to chain methods, e.g. `sf.smooth().sbaseline("snip").normalize()`.
+        
+        Parameters
+        ----------
+        method : str
+            A name of the method in `pybaselines` package (e.g. "airpls", "snip"),
+            or "rubberband"
+        n_jobs : int, optional
+            Number of parallel jobs for processing multiple spectra. If n_jobs > 1,
+            uses threading for parallel processing. Default is 1 (no parallelization).
+        kwargs: dict
+            Additional parameters to pass to the baseline correction method
         """
-        return self - self.baseline(method, **kwargs).spc
+        return self - self.baseline(method, n_jobs=n_jobs, **kwargs).spc
 
     # ----------------------------------------------------------------------
     # Format conversion
