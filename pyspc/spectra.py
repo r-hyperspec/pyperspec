@@ -216,7 +216,7 @@ class SpectraFrame:
         df = read_func(path, **kwargs)
 
         if isinstance(df.columns, pd.MultiIndex):
-            # One type of export where data is stores as multiindex
+            # One type of export where data is stored as multiindex
             # (spc, ...) -> for spectra, (data, ...) -> for data
             sf = cls(
                 spc=df["spc"],
@@ -345,7 +345,37 @@ class SpectraFrame:
         return len(np.unique(self.wl[1:] - self.wl[:-1])) == 1
 
     # ----------------------------------------------------------------------
-    # Coping
+    # Index
+
+    @property
+    def index(self) -> pd.Index:
+        """Row indices (same as ``self.data.index``)."""
+        return self.data.index
+
+    @index.setter
+    def index(self, value: Any) -> None:
+        self.data.index = value
+
+    def set_index(self, keys, *args, **kwargs) -> "SpectraFrame":
+        """Return a new SpectraFrame with a new index.
+
+        Note: ``inplace`` is ignored to match SpectraFrame copy semantics.
+        """
+        kwargs.pop("inplace", None)
+        new_data = self.data.set_index(keys, *args, **kwargs)
+        return SpectraFrame(spc=self.spc.copy(), wl=self.wl.copy(), data=new_data)
+
+    def reset_index(self, *args, **kwargs) -> "SpectraFrame":
+        """Return a new SpectraFrame with a reset index.
+
+        Note: ``inplace`` is ignored to match SpectraFrame copy semantics.
+        """
+        kwargs.pop("inplace", None)
+        new_data = self.data.reset_index(*args, **kwargs)
+        return SpectraFrame(spc=self.spc.copy(), wl=self.wl.copy(), data=new_data)
+
+    # ----------------------------------------------------------------------
+    # Copying
 
     def copy(self) -> "SpectraFrame":
         return SpectraFrame(
@@ -602,8 +632,6 @@ class SpectraFrame:
     def __getattr__(self, name) -> pd.Series:
         if name in self.data.columns:
             return self.data[name]
-        if name in ["index"]:
-            return self.data.index
         if name in ["columns"]:
             return self.data.columns
         super().__getattr__(name)

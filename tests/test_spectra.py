@@ -383,6 +383,39 @@ class TestSpectraFrameAttrs:
         with pytest.raises(AttributeError):
             _ = frame.non_existent_attr
 
+    def test_index_setter(self):
+        frame = self.sample_spectra_frame()
+
+        new_index = pd.Index(["s1", "s2", "s3"])
+        frame.index = new_index
+
+        assert_index_equal(frame.index, new_index)
+        assert_index_equal(frame.data.index, new_index)
+
+        frame.index = ["t1", "t2", "t3"]
+        assert_index_equal(frame.index, pd.Index(["t1", "t2", "t3"]))
+
+        with pytest.raises(ValueError):
+            frame.index = ["too", "short"]
+
+    def test_reset_index(self):
+        frame = self.sample_spectra_frame()
+
+        result = frame.reset_index()
+
+        expected = frame.data.reset_index()
+        assert_frame_equal(result.data, expected)
+        assert_index_equal(frame.data.index, pd.Index([5, 6, 7]))
+
+    def test_set_index(self):
+        frame = self.sample_spectra_frame()
+
+        result = frame.set_index("A")
+
+        expected = frame.data.set_index("A")
+        assert_frame_equal(result.data, expected)
+        assert_index_equal(frame.data.index, pd.Index([5, 6, 7]))
+
 
 class TestSpectraFrameAssign:
     def sample_spectra_frame(self) -> SpectraFrame:
