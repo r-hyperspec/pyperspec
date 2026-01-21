@@ -390,7 +390,7 @@ class SpectraFrame:
         ...     wl=[500, 600],
         ...     data={"group": ["B", "A"]},
         ... )
-        >>> sf.data.index = [2, 1]
+        >>> sf.index = [2, 1]
         >>> print(sf.sort_index())
            500  600 group
         1    3    4     A
@@ -419,7 +419,11 @@ class SpectraFrame:
 
         Examples
         --------
-        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[500, 600], data={"group": ["B", "A"]})
+        >>> sf = SpectraFrame(
+        ...     [[1, 2], [3, 4]],
+        ...     wl=[500, 600],
+        ...     data={"group": ["B", "A"]},
+        ... )
         >>> print(sf.sort_values("group"))
            500  600 group
         1    3    4     A
@@ -450,7 +454,11 @@ class SpectraFrame:
 
         Examples
         --------
-        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[600, 500], data={"group": ["A", "B"]})
+        >>> sf = SpectraFrame(
+        ...     [[1, 2], [3, 4]],
+        ...     wl=[600, 500],
+        ...     data={"group": ["A", "B"]},
+        ... )
         >>> print(sf.wl_sort())
            500  600 group
         0    2    1     A

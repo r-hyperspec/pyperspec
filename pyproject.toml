@@ -74,7 +74,6 @@ lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 # Assume Python 3.9
 target-version = "py39"
-lint.ignore-init-module-imports = true
 
 [build-system]
 requires = ["poetry-core"]
