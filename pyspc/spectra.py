@@ -402,9 +402,12 @@ class SpectraFrame:
             raise ValueError("SpectraFrame.sort_index only supports axis=0 (rows).")
         ignore_index = kwargs.pop("ignore_index", False)
 
-        sorted_data = self.data.sort_index(*args, **kwargs)
-        row_indexer = self.data.index.get_indexer_for(sorted_data.index)
+        sorted_data = self.data.assign(_pos=np.arange(len(self.data))).sort_index(
+            *args, **kwargs
+        )
+        row_indexer = sorted_data["_pos"].to_numpy()
         new_spc = self.spc[row_indexer, :]
+        sorted_data = sorted_data.drop(columns="_pos")
 
         if ignore_index:
             sorted_data = sorted_data.reset_index(drop=True)
@@ -435,9 +438,12 @@ class SpectraFrame:
             raise ValueError("SpectraFrame.sort_values only supports axis=0 (rows).")
         ignore_index = kwargs.pop("ignore_index", False)
 
-        sorted_data = self.data.sort_values(by=by, *args, **kwargs)
-        row_indexer = self.data.index.get_indexer_for(sorted_data.index)
+        sorted_data = self.data.assign(_pos=np.arange(len(self.data))).sort_values(
+            by=by, *args, **kwargs
+        )
+        row_indexer = sorted_data["_pos"].to_numpy()
         new_spc = self.spc[row_indexer, :]
+        sorted_data = sorted_data.drop(columns="_pos")
 
         if ignore_index:
             sorted_data = sorted_data.reset_index(drop=True)
