@@ -214,7 +214,9 @@ class TestSpectraFrameSorting:
         sorted_sf = sf.sort_values("group")
 
         assert_array_equal(sorted_sf.spc, np.array([[3, 4], [1, 2], [5, 6]]))
-        assert_frame_equal(sorted_sf.data, pd.DataFrame({"group": ["a", "b", "c"]}))
+        assert_frame_equal(
+            sorted_sf.data, pd.DataFrame({"group": ["a", "b", "c"]}, index=[1, 0, 2])
+        )
 
     def test_wl_sort(self):
         spc = np.array([[1, 2, 3], [4, 5, 6]])
