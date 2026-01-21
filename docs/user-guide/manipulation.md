@@ -126,13 +126,25 @@ sf.data = sf.data.merge(external_data, on='sample_id', how='left')
 sf.data.loc[sf.data['group'] == 'Control', 'treatment'] = 'None'
 ```
 
+## Sorting
+
+You can sort spectra by row index or by metadata values, similar to pandas.
+Wavelengths can be sorted independently with `wl_sort`, which also reorders
+the spectral columns to match the new wavelength order.
+
+```python
+sf_sorted = sf.sort_index()
+sf_sorted = sf.sort_values("group")
+sf_sorted = sf.wl_sort()
+```
+
 ## Concatenation
 ```python
 # Combine multiple SpectraFrames
 combined = pyspc.concat([sf1, sf2, sf3])
 
 # Ensure consistent wavelength grids before concatenation
-sf2_aligned = sf2.resample_wl(sf1.wl)
+sf2_aligned = sf2.wl_resample(sf1.wl)
 combined = pyspc.concat([sf1, sf2_aligned])
 ```
 
