@@ -220,6 +220,33 @@ class TestSpectraFrameSorting:
             pd.DataFrame({"group": ["d", "c", "b", "a"]}, index=[0, 0, 1, 1]),
         )
 
+    def test_sort_index_ascending_param(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6]])
+        data = pd.DataFrame({"group": ["b", "a", "c"]}, index=[2, 0, 1])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_index(ascending=False)
+
+        assert_index_equal(sorted_sf.index, pd.Index([2, 1, 0]))
+        assert_array_equal(sorted_sf.spc, np.array([[1, 2], [5, 6], [3, 4]]))
+        assert_frame_equal(
+            sorted_sf.data, pd.DataFrame({"group": ["b", "c", "a"]}, index=[2, 1, 0])
+        )
+
+    def test_sort_index_na_position(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6]])
+        data = pd.DataFrame({"group": ["b", "missing", "a"]}, index=[1, np.nan, 0])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_index(na_position="first")
+
+        assert_index_equal(sorted_sf.index, pd.Index([np.nan, 0, 1]))
+        assert_array_equal(sorted_sf.spc, np.array([[3, 4], [5, 6], [1, 2]]))
+        assert_frame_equal(
+            sorted_sf.data,
+            pd.DataFrame({"group": ["missing", "a", "b"]}, index=[np.nan, 0, 1]),
+        )
+
     def test_sort_values(self):
         spc = np.array([[1, 2], [3, 4], [5, 6]])
         data = pd.DataFrame({"group": ["b", "a", "c"]})
