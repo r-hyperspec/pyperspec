@@ -206,6 +206,20 @@ class TestSpectraFrameSorting:
             sorted_sf.data, pd.DataFrame({"group": ["a", "c", "b"]}, index=[0, 1, 2])
         )
 
+    def test_sort_index_duplicate_indices(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
+        data = pd.DataFrame({"group": ["b", "a", "d", "c"]}, index=[1, 1, 0, 0])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_index()
+
+        assert_index_equal(sorted_sf.index, pd.Index([0, 0, 1, 1]))
+        assert_array_equal(sorted_sf.spc, np.array([[5, 6], [7, 8], [1, 2], [3, 4]]))
+        assert_frame_equal(
+            sorted_sf.data,
+            pd.DataFrame({"group": ["d", "c", "b", "a"]}, index=[0, 0, 1, 1]),
+        )
+
     def test_sort_values(self):
         spc = np.array([[1, 2], [3, 4], [5, 6]])
         data = pd.DataFrame({"group": ["b", "a", "c"]})
@@ -216,6 +230,20 @@ class TestSpectraFrameSorting:
         assert_array_equal(sorted_sf.spc, np.array([[3, 4], [1, 2], [5, 6]]))
         assert_frame_equal(
             sorted_sf.data, pd.DataFrame({"group": ["a", "b", "c"]}, index=[1, 0, 2])
+        )
+
+    def test_sort_values_duplicate_indices(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
+        data = pd.DataFrame({"group": ["b", "a", "a", "b"]}, index=[1, 1, 0, 0])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_values("group")
+
+        assert_index_equal(sorted_sf.index, pd.Index([1, 0, 1, 0]))
+        assert_array_equal(sorted_sf.spc, np.array([[3, 4], [5, 6], [1, 2], [7, 8]]))
+        assert_frame_equal(
+            sorted_sf.data,
+            pd.DataFrame({"group": ["a", "a", "b", "b"]}, index=[1, 0, 1, 0]),
         )
 
     def test_wl_sort(self):
