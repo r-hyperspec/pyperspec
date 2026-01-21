@@ -137,10 +137,10 @@ The method passes data to [`scipy.interpolate.interp1d`](https://docs.scipy.org/
 new_wavelengths = np.linspace(400, 1000, 500)
 
 # Resample spectra
-sf_resampled = sf.resample_wl(new_wavelengths)
+sf_resampled = sf.wl_resample(new_wavelengths)
 
 # With custom interpolation parameters
-sf_resampled = sf.resample_wl(new_wavelengths, 
+sf_resampled = sf.wl_resample(new_wavelengths, 
                              kind='cubic', 
                              bounds_error=False, 
                              fill_value='extrapolate')
@@ -219,7 +219,7 @@ best_matches = sf.query("correlation > 0.95")
 ```python
 # More complex preprocessing pipeline
 processed_sf = (sf
-    .resample_wl(np.linspace(400, 4000, 1000))
+    .wl_resample(np.linspace(400, 4000, 1000))
     .smooth("savgol", window_length=7, polyorder=2)
     .sbaseline("snip", max_half_window=40)
     .normalize("peak", peak_range=(2800, 3000))
@@ -236,4 +236,3 @@ processed_sf = (sf
    - Normalization (for classification or comparison purposes)
 
 **Parameter optimization**: Test different parameters on representative spectra before applying to entire datasets
-

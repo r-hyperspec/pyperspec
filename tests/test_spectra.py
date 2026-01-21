@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_allclose
 from pandas.testing import assert_frame_equal, assert_series_equal, assert_index_equal
 import pytest
 from pathlib import Path
@@ -190,6 +190,68 @@ class TestSpectraFrameCopy:
         assert copied.spc is not sf.spc
         assert copied.wl is not sf.wl
         assert copied.data is not sf.data
+
+
+class TestSpectraFrameSorting:
+    def test_sort_index(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6]])
+        data = pd.DataFrame({"group": ["b", "a", "c"]}, index=[2, 0, 1])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_index()
+
+        assert_index_equal(sorted_sf.index, pd.Index([0, 1, 2]))
+        assert_array_equal(sorted_sf.spc, np.array([[3, 4], [5, 6], [1, 2]]))
+        assert_frame_equal(
+            sorted_sf.data, pd.DataFrame({"group": ["a", "c", "b"]}, index=[0, 1, 2])
+        )
+
+    def test_sort_values(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6]])
+        data = pd.DataFrame({"group": ["b", "a", "c"]})
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_values("group")
+
+        assert_array_equal(sorted_sf.spc, np.array([[3, 4], [1, 2], [5, 6]]))
+        assert_frame_equal(
+            sorted_sf.data, pd.DataFrame({"group": ["a", "b", "c"]})
+        )
+
+    def test_wl_sort(self):
+        spc = np.array([[1, 2, 3], [4, 5, 6]])
+        wl = [600, 500, 700]
+        sf = SpectraFrame(spc, wl=wl)
+
+        sorted_sf = sf.wl_sort()
+
+        assert_array_equal(sorted_sf.wl, np.array([500, 600, 700]))
+        assert_array_equal(sorted_sf.spc, np.array([[2, 1, 3], [5, 4, 6]]))
+
+    def test_resample_wl_deprecated_alias(self):
+        spc = np.array([[1.0, 2.0, 3.0]])
+        wl = np.array([400.0, 500.0, 600.0])
+        sf = SpectraFrame(spc, wl=wl)
+        new_wl = np.array([450.0, 550.0])
+
+        with pytest.warns(DeprecationWarning, match="resample_wl is deprecated"):
+            resampled = sf.resample_wl(new_wl)
+
+        expected = sf.wl_resample(new_wl)
+        assert_array_equal(resampled.wl, expected.wl)
+        assert_allclose(resampled.spc, expected.spc)
+
+    def test_wl_resample(self):
+        spc = np.array([[0.0, 10.0, 20.0]])
+        wl = np.array([0.0, 1.0, 2.0])
+        sf = SpectraFrame(spc, wl=wl)
+        new_wl = np.array([0.0, 0.5, 1.5, 2.0])
+
+        resampled = sf.wl_resample(new_wl)
+
+        expected_spc = np.array([[0.0, 5.0, 15.0, 20.0]])
+        assert_array_equal(resampled.wl, new_wl)
+        assert_allclose(resampled.spc, expected_spc)
 
 
 class TestSpectraFrameItems:

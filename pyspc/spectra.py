@@ -375,6 +375,95 @@ class SpectraFrame:
         return SpectraFrame(spc=self.spc.copy(), wl=self.wl.copy(), data=new_data)
 
     # ----------------------------------------------------------------------
+    # Sorting
+
+    def sort_index(self, *args, **kwargs) -> "SpectraFrame":
+        """Return a new SpectraFrame sorted by row index.
+
+        Mirrors pandas.DataFrame.sort_index for sorting rows, but always returns
+        a new SpectraFrame and keeps spectra aligned with metadata.
+
+        Examples
+        --------
+        >>> sf = SpectraFrame(
+        ...     [[1, 2], [3, 4]],
+        ...     wl=[500, 600],
+        ...     data={"group": ["B", "A"]},
+        ... )
+        >>> sf.data.index = [2, 1]
+        >>> print(sf.sort_index())
+           500  600 group
+        1    3    4     A
+        2    1    2     B
+        """
+        kwargs.pop("inplace", None)
+        axis = kwargs.pop("axis", 0)
+        if axis not in [0, "index"]:
+            raise ValueError("SpectraFrame.sort_index only supports axis=0 (rows).")
+        ignore_index = kwargs.pop("ignore_index", False)
+
+        sorted_data = self.data.sort_index(*args, **kwargs)
+        row_indexer = self.data.index.get_indexer_for(sorted_data.index)
+        new_spc = self.spc[row_indexer, :]
+
+        if ignore_index:
+            sorted_data = sorted_data.reset_index(drop=True)
+
+        return SpectraFrame(spc=new_spc, wl=self.wl.copy(), data=sorted_data)
+
+    def sort_values(self, by, *args, **kwargs) -> "SpectraFrame":
+        """Return a new SpectraFrame sorted by row values.
+
+        Mirrors pandas.DataFrame.sort_values for sorting rows, but always returns
+        a new SpectraFrame and keeps spectra aligned with metadata.
+
+        Examples
+        --------
+        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[500, 600], data={"group": ["B", "A"]})
+        >>> print(sf.sort_values("group"))
+           500  600 group
+        1    3    4     A
+        0    1    2     B
+        """
+        kwargs.pop("inplace", None)
+        axis = kwargs.pop("axis", 0)
+        if axis not in [0, "index"]:
+            raise ValueError("SpectraFrame.sort_values only supports axis=0 (rows).")
+        ignore_index = kwargs.pop("ignore_index", False)
+
+        sorted_data = self.data.sort_values(by=by, *args, **kwargs)
+        row_indexer = self.data.index.get_indexer_for(sorted_data.index)
+        new_spc = self.spc[row_indexer, :]
+
+        if ignore_index:
+            sorted_data = sorted_data.reset_index(drop=True)
+
+        return SpectraFrame(spc=new_spc, wl=self.wl.copy(), data=sorted_data)
+
+    def wl_sort(
+        self, ascending: bool = True, kind: str = "quicksort"
+    ) -> "SpectraFrame":
+        """Return a new SpectraFrame with sorted wavelengths.
+
+        The wavelength array is sorted, and columns in `spc` are reordered to
+        stay aligned with the updated wavelength order.
+
+        Examples
+        --------
+        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[600, 500], data={"group": ["A", "B"]})
+        >>> print(sf.wl_sort())
+           500  600 group
+        0    2    1     A
+        1    4    3     B
+        """
+        wl_order = np.argsort(self.wl, kind=kind)
+        if not ascending:
+            wl_order = wl_order[::-1]
+        new_wl = self.wl[wl_order]
+        new_spc = self.spc[:, wl_order]
+        return SpectraFrame(spc=new_spc, wl=new_wl, data=self.data.copy())
+
+    # ----------------------------------------------------------------------
     # Copying
 
     def copy(self) -> "SpectraFrame":
@@ -841,7 +930,7 @@ class SpectraFrame:
     # ----------------------------------------------------------------------
     # Wavelengths
 
-    def resample_wl(
+    def wl_resample(
         self, new_wl: np.ndarray, method="interp1d", **kwargs
     ) -> "SpectraFrame":
         """Resample wavelengths, i.e. shift wavelenghts with interpolation
@@ -876,6 +965,20 @@ class SpectraFrame:
             raise NotImplementedError("Other methods not available yet")
 
         return SpectraFrame(new_spc, wl=new_wl, data=self.data)
+
+    def resample_wl(
+        self, new_wl: np.ndarray, method="interp1d", **kwargs
+    ) -> "SpectraFrame":
+        """Resample wavelengths (deprecated name for ``wl_resample``).
+
+        This method is kept for backward compatibility. Use ``wl_resample``.
+        """
+        warnings.warn(
+            "resample_wl is deprecated; use wl_resample instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.wl_resample(new_wl, method=method, **kwargs)
 
     # ----------------------------------------------------------------------
     # Stats & Applys
