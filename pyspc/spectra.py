@@ -402,6 +402,7 @@ class SpectraFrame:
             raise ValueError("SpectraFrame.sort_index only supports axis=0 (rows).")
         ignore_index = kwargs.pop("ignore_index", False)
 
+        # Track original row positions to keep alignment with duplicate indices.
         sorted_data = self.data.assign(_pos=np.arange(len(self.data))).sort_index(
             *args, **kwargs
         )
@@ -438,6 +439,7 @@ class SpectraFrame:
             raise ValueError("SpectraFrame.sort_values only supports axis=0 (rows).")
         ignore_index = kwargs.pop("ignore_index", False)
 
+        # Track original row positions to keep alignment with duplicate indices.
         sorted_data = self.data.assign(_pos=np.arange(len(self.data))).sort_values(
             by=by, *args, **kwargs
         )
