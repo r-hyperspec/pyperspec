@@ -246,6 +246,39 @@ class TestSpectraFrameSorting:
             pd.DataFrame({"group": ["a", "a", "b", "b"]}, index=[1, 0, 1, 0]),
         )
 
+    def test_sort_values_ascending_param(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
+        data = pd.DataFrame(
+            {"group": ["b", "a", "b", "a"], "score": [1, 2, 3, 4]}, index=[1, 1, 0, 0]
+        )
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_values(["group", "score"], ascending=[True, False])
+
+        assert_index_equal(sorted_sf.index, pd.Index([0, 1, 0, 1]))
+        assert_array_equal(sorted_sf.spc, np.array([[7, 8], [3, 4], [5, 6], [1, 2]]))
+        assert_frame_equal(
+            sorted_sf.data,
+            pd.DataFrame(
+                {"group": ["a", "a", "b", "b"], "score": [4, 2, 3, 1]},
+                index=[0, 1, 0, 1],
+            ),
+        )
+
+    def test_sort_values_na_position(self):
+        spc = np.array([[1, 2], [3, 4], [5, 6]])
+        data = pd.DataFrame({"group": ["b", None, "a"]}, index=[2, 1, 0])
+        sf = SpectraFrame(spc, wl=[500, 600], data=data)
+
+        sorted_sf = sf.sort_values("group", na_position="first")
+
+        assert_index_equal(sorted_sf.index, pd.Index([1, 0, 2]))
+        assert_array_equal(sorted_sf.spc, np.array([[3, 4], [5, 6], [1, 2]]))
+        assert_frame_equal(
+            sorted_sf.data,
+            pd.DataFrame({"group": [None, "a", "b"]}, index=[1, 0, 2]),
+        )
+
     def test_wl_sort(self):
         spc = np.array([[1, 2, 3], [4, 5, 6]])
         wl = [600, 500, 700]

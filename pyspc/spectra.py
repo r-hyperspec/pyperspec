@@ -432,6 +432,20 @@ class SpectraFrame:
            500  600 group
         1    3    4     A
         0    1    2     B
+        >>> sf = SpectraFrame(
+        ...     [[1, 2], [3, 4], [5, 6], [7, 8]],
+        ...     wl=[500, 600],
+        ...     data={
+        ...         "group": ["B", "A", "B", "A"],
+        ...         "score": [1, 2, 3, 4],
+        ...     },
+        ... )
+        >>> print(sf.sort_values(["group", "score"], ascending=[True, False]))
+           500  600 group  score
+        3    7    8     A      4
+        1    3    4     A      2
+        2    5    6     B      3
+        0    1    2     B      1
         """
         kwargs.pop("inplace", None)
         axis = kwargs.pop("axis", 0)
