@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyspc"
-version = "0.5.1"
+version = "0.5.2"
 license = "MIT"
 description = "Tools for Spectroscopy"
 authors = ["Rustam Guliev <glvrst@gmail.com>"]
@@ -8,7 +8,7 @@ readme = "README.md"
 keywords = ["spectroscopy", "Raman", "IR", "signal", "processing"]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
+python = ">=3.9"
 pandas = "^2.1.1"
 matplotlib = "^3.8.0"
 scipy = "^1.11.2"
