@@ -462,7 +462,7 @@ description = "A new flavour of deep learning operations"
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"einops\""
+markers = "extra == \"einops\" or extra == \"all\""
 files = [
     {file = "einops-0.8.2-py3-none-any.whl", hash = "sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193"},
     {file = "einops-0.8.2.tar.gz", hash = "sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827"},
@@ -2319,9 +2319,10 @@ docs = ["furo", "jaraco.packaging (>=9.3)", "jaraco.tidelift (>=1.4)", "rst.link
 testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "pytest (>=6)", "pytest-black (>=0.3.7) ; platform_python_implementation != \"PyPy\"", "pytest-checkdocs (>=2.4)", "pytest-cov", "pytest-enabler (>=2.2)", "pytest-ignore-flaky", "pytest-mypy (>=0.9.1) ; platform_python_implementation != \"PyPy\"", "pytest-ruff"]
 
 [extras]
+all = ["einops"]
 einops = ["einops"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9"
-content-hash = "0ac5d4b69ba06b15c91d5f455a367aea8c0072f127b85b1a03aaf821cb2fe8d0"
+content-hash = "b0422eedeaebf7e00264d7aa8cfe6046ecc2fc66fa9f4dacbc5b2283c2ef8afb"
