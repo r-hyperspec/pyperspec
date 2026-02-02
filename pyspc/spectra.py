@@ -1318,8 +1318,9 @@ class SpectraFrame:
             Optional custom grid values for specific columns
             (i.e. 'colname': [grid_value1, grid_value2, ...]). If not provided,
             the unique values from `self['colname']` are used. This is to provide
-            control over the grid points, e.g. to include values not present
-            in the data. For example, pad images with additional pixels.
+            control over the grid points. It may be used to include values not present
+            in the data (e.g., pad images with additional pixels); or, the opposite,
+            to exclude unwanted values present in the data.
 
         Returns
         -------
