@@ -990,6 +990,15 @@ class TestSpectraFrameBaseline:
         result = sf.sbaseline("rubberband")
         assert np.array_equal(result.spc[0, :], signal)
 
+    def test_baseline_threaded(self):
+        wl = 400 + np.arange(0, 10, 2)
+        signal = np.array([0, 5, 10, 5, 0])
+        bl = 10 + 5 * (wl - 400)
+        sf = SpectraFrame(signal + bl, wl=wl)
+
+        result = sf.baseline("rubberband", single_threaded=False)
+        assert np.array_equal(result.spc[0, :], bl)
+
 
 class TestSpectaFrameNormalize:
     def test_normalize(self):

@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional, Union, Tuple, Callable, TypeVar
 from pathlib import Path
 import warnings
@@ -51,6 +52,24 @@ def _einops_pattern_to_names(pattern: str) -> list[str]:
     names = [tok for tok in pattern.strip().split(" ") if tok]
 
     return names
+
+
+def _thread_baseline_func(
+    wl: np.ndarray,
+    method: str,
+    kwargs: dict[str, Any],
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Create a baseline function for use within a single thread."""
+    if method == "rubberband":
+        return lambda y: rubberband(wl, y, **kwargs)
+
+    baseline_fitter = pybaselines.Baseline(x_data=wl)
+    if not hasattr(baseline_fitter, method):
+        raise ValueError(
+            "Unknown method. Method must be either " "from `pybaselines` or 'rubberband'"
+        )
+    baseline_method = getattr(baseline_fitter, method)
+    return lambda y: baseline_method(y, **kwargs)[0]
 
 
 def _sorted_unique(values: pd.Series) -> list[Any]:
@@ -1941,7 +1960,13 @@ class SpectraFrame:
 
         return spc
 
-    def baseline(self, method: str, **kwargs) -> "SpectraFrame":
+    def baseline(
+        self,
+        method: str,
+        *,
+        single_threaded: bool = True,
+        **kwargs,
+    ) -> "SpectraFrame":
         """Dispatcher for spectra baseline estimation
 
         Dispatches baseline correction to the corresponding method
@@ -1953,6 +1978,10 @@ class SpectraFrame:
         method : str
             A name of the method in `pybaselines` package (e.g. "airpls", "snip"),
             or "rubberband"
+        single_threaded : bool, optional
+            If True, uses the classic single-threaded baseline computation. If False,
+            uses multithreading for baseline estimation by fitting each spectrum in
+            a thread.
         kwargs: dict
             Additional parameters to pass to the baseline correction method
 
@@ -1966,18 +1995,19 @@ class SpectraFrame:
         ValueError
             Unknown baseline method provided
         """
-        baseline_fitter = pybaselines.Baseline(x_data=self.wl)
-        if hasattr(baseline_fitter, method):
-            baseline_method = getattr(baseline_fitter, method)
-            baseline_func = lambda y: baseline_method(y, **kwargs)[0]
-        elif method == "rubberband":
-            baseline_func = lambda y: rubberband(self.wl, y, **kwargs)
-        else:
-            raise ValueError(
-                "Unknown method. Method must be either "
-                "from `pybaselines` or 'rubberband'"
-            )
-        return self.apply(baseline_func, axis=1)
+        if single_threaded:
+            baseline_func = _thread_baseline_func(self.wl, method, kwargs)
+            return self.apply(baseline_func, axis=1)
+
+        def thread_baseline_func(y: np.ndarray) -> np.ndarray:
+            baseline_func = _thread_baseline_func(self.wl, method, kwargs)
+            return baseline_func(y)
+
+        baselines = np.empty_like(self.spc)
+        with ThreadPoolExecutor() as pool:
+            for index, baseline in enumerate(pool.map(thread_baseline_func, self.spc)):
+                baselines[index] = baseline
+        return SpectraFrame(baselines, wl=self.wl, data=self.data)
 
     def sbaseline(self, method: str, **kwargs) -> "SpectraFrame":
         """Subtract baseline from the spectra
