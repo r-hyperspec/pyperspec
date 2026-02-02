@@ -24,6 +24,13 @@ To install a specific version, you can specify the commit hash or tag:
 pip install git+https://github.com/r-hyperspec/pyperspec.git@<commit_hash_or_tag>
 ```
 
+## Optional extras
+
+Some features require optional dependencies:
+
+- Multidimensional tensor reshaping and reduction (`SpectraFrame.rearrange`, `SpectraFrame.reduce`):
+  install with `pip install einops`
+
 ## Verify Installation
 
 To verify that `pyperspec` was installed correctly:

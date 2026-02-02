@@ -2,6 +2,7 @@ import os
 from typing import Any, Optional, Union, Tuple, Callable, TypeVar
 from pathlib import Path
 import warnings
+import re
 
 from numpy.typing import ArrayLike
 import numpy as np
@@ -18,6 +19,50 @@ from .peaks import around_max_peak_fit
 __all__ = ["SpectraFrame"]
 
 PathLike = TypeVar("PathLike", str, os.PathLike)
+
+
+def _require_einops():
+    try:
+        import einops  # type: ignore[import-not-found]
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "Optional dependency 'einops' is required for this operation. "
+            "Install it via 'pip install pyspc[einops]' or add 'einops' to your "
+            "environment."
+        ) from e
+    return einops
+
+
+def _einops_pattern_to_names(pattern: str) -> list[str]:
+    """Split an einops-style pattern into top-level tokens (space-separated).
+
+    '(a b c) d2 1 3 (e f3) foo_bar' -> ['a', 'b', 'c', 'd2', 'e', 'f3', 'foo_bar']
+    NOTE: Order is preserved, duplicates are not removed.
+    """
+
+    # Pad with spaces to simplify regex
+    pattern = f" {pattern} "
+    # Remove all parentheses
+    pattern = re.sub(r"[()]", r" ", pattern)
+    # Remove all digits (not part of a word)
+    pattern = re.sub(r" (\d+) ", r" ", pattern)
+
+    # Get all names
+    names = [tok for tok in pattern.strip().split(" ") if tok]
+
+    return names
+
+
+def _sorted_unique(values: pd.Series) -> list[Any]:
+    unique_vals = list(pd.unique(values))
+    # Fail fast on missing axis values; NaNs break deterministic gridding/sorting.
+    if any(np.any(pd.isna(v)) for v in unique_vals):
+        raise ValueError("Axis columns must not contain NaN values.")
+    try:
+        return sorted(unique_vals)
+    except TypeError:
+        # Fallback for mixed/non-orderable types: deterministic but arbitrary ordering.
+        return sorted(unique_vals, key=lambda v: (str(type(v)), str(v)))
 
 
 def _is_empty_slice(param: Any) -> bool:
@@ -153,11 +198,11 @@ class SpectraFrame:
         ...     data={"group": list("AABB")}
         ... )
         >>> print(sf)
-              600.0  ...     660.0 group
-        0  0.374540  ...  0.156019     A
-        1  0.155995  ...  0.708073     A
-        2  0.020584  ...  0.181825     B
-        3  0.183405  ...  0.291229     B
+              600.0     615.0     630.0     645.0     660.0 group
+        0  0.374540  0.950714  0.731994  0.598658  0.156019     A
+        1  0.155995  0.058084  0.866176  0.601115  0.708073     A
+        2  0.020584  0.969910  0.832443  0.212339  0.181825     B
+        3  0.183405  0.304242  0.524756  0.431945  0.291229     B
         """
         # Prepare SPC
         spc = np.array(spc)
@@ -401,6 +446,9 @@ class SpectraFrame:
         if axis not in [0, "index"]:
             raise ValueError("SpectraFrame.sort_index only supports axis=0 (rows).")
         ignore_index = kwargs.pop("ignore_index", False)
+
+        # Use stable sorting to preserve order within duplicate indices.
+        kwargs.setdefault("kind", "mergesort")
 
         # Track original row positions to keep alignment with duplicate indices.
         sorted_data = self.data.assign(_pos=np.arange(len(self.data))).sort_index(
@@ -1242,6 +1290,552 @@ class SpectraFrame:
         return self.apply(func, q, *args, groupby=groupby, axis=axis, **kwargs)
 
     # ----------------------------------------------------------------------
+    # Multidimensional rearrangements via einops
+    def _fill_missing_grid(
+        self,
+        columns: list[str],
+        fill_value: Optional[float] = None,
+        **grid_values: dict[str, list[Any]],
+    ) -> "SpectraFrame":
+        """Fill missing coordinate combinations in a ragged grid.
+
+        During preprocessing, it is common to exclude some spectra.
+        Consequently, some coordinate combinations may be missing in the data.
+        (e.g. excluding some 'x, y' pixels from a spectral image).
+        Downstream, such data can not be correctly reshaped without additional
+        handling.  This method helps to fill the missing combinations
+        with a specified `fill_value`, resulting in a complete grid.
+
+        Parameters
+        ----------
+        columns : list of str
+            List of data column names to define the grid axes. Must be present in
+            `self.data`.
+        fill_value : Optional[float], optional
+            Value to use for filling missing spectra. If None (default), missing
+            spectra are filled with NaNs (``np.nan``).
+        **grid_values : dict of str to list of Any
+            Optional custom grid values for specific columns
+            (i.e. 'colname': [grid_value1, grid_value2, ...]). If not provided,
+            the unique values from `self['colname']` are used. This is to provide
+            control over the grid points, e.g. to include values not present
+            in the data. For example, pad images with additional pixels.
+
+        Returns
+        -------
+        SpectraFrame
+            A new SpectraFrame with full grid of coordinate combinations.
+            Missing combinations are filled with `fill_value`.
+            The order of spectra is sorted by the order of the grid combinations.
+            Only the grid axis columns in ``columns`` are retained in ``.data``.
+
+        Raises
+        ------
+        ValueError
+            If any of the specified columns are not present in `self.data`, or
+            if custom `grid_values` are provided for columns not in `columns`.
+        ValueError
+            If duplicate coordinate combinations are present for the requested grid
+            axes in ``columns``.
+
+        Notes
+        -----
+        Padding may promote the dtype of ``spc`` to accommodate ``fill_value``.
+        In particular, the default ``fill_value=None`` pads with ``np.nan`` and
+        therefore promotes integer spectra to floating point.
+
+        Examples
+        --------
+        >>> # Create a SpectraFrame with missing combinations
+        >>> sf = SpectraFrame(
+        ...     spc=np.array([[1, 2], [3, 4], [5, 6]]),
+        ...     wl=np.array([400, 500]),
+        ...     data=pd.DataFrame({
+        ...         "x": [0, 0, 1],
+        ...         "y": [0, 1, 0]
+        ...     })
+        ... )
+        >>> print(sf)
+           400  500  x  y
+        0    1    2  0  0
+        1    3    4  0  1
+        2    5    6  1  0
+
+        >>> # Fill missing grid combinations for 'x' and 'y'
+        >>> filled_sf = sf._fill_missing_grid(columns=['x', 'y'])
+        >>> print(filled_sf)
+           400  500  x  y
+        0  1.0  2.0  0  0
+        1  3.0  4.0  0  1
+        2  5.0  6.0  1  0
+        3  NaN  NaN  1  1
+
+        >>> # Fill missing grid with custom grid values and fill value
+        >>> filled_sf_custom = sf._fill_missing_grid(
+        ...     columns=['x', 'y'],
+        ...     fill_value=0,
+        ...     x=[2, 1, 0],
+        ...     y=[0, 1, 2]
+        ... )
+        >>> print(filled_sf_custom)
+           400  500  x  y
+        0    0    0  2  0
+        1    0    0  2  1
+        2    0    0  2  2
+        3    5    6  1  0
+        4    0    0  1  1
+        5    0    0  1  2
+        6    1    2  0  0
+        7    3    4  0  1
+        8    0    0  0  2
+        """
+        # Validate: no grid axes requested (nothing to fill/sort).
+        if not columns:
+            raise ValueError("No grid axes specified in `columns`.")
+
+        # Validate: all custom grid_values are in columns
+        missing_columns = set(grid_values.keys()) - set(columns)
+        if missing_columns:
+            raise ValueError(
+                "Custom grid_values provided for columns not present in data: "
+                f"{sorted(missing_columns)!r}"
+            )
+
+        # Validate: all columns are in data.columns
+        extra_columns = set(columns) - set(self.data.columns)
+        if extra_columns:
+            raise ValueError(f"Columns not present in data: {sorted(extra_columns)!r}")
+
+        # Validate: no duplicate coordinate tuples for the requested grid axes.
+        # Duplicates make gridding ambiguous (more than one spectrum per cell).
+        coord_df = self.data.loc[:, columns]
+        if coord_df.duplicated(subset=columns).any():
+            counts = coord_df.groupby(columns, dropna=False).size()
+            dup_counts = counts[counts > 1].sort_values(ascending=False)
+            examples = list(dup_counts.head(5).index)
+            raise ValueError(
+                "Duplicate coordinate combinations found for grid axes "
+                f"{columns!r}. Examples (up to 5): {examples!r}. "
+                "Include additional axis columns in the pattern or aggregate first."
+            )
+
+        # Prepare grid_values for each column
+        out_grid_values = {col: _sorted_unique(self.data[col]) for col in columns}
+        out_grid_values.update(grid_values)
+
+        # Create full grid of coordinate combinations
+        grids = np.meshgrid(*[out_grid_values[col] for col in columns], indexing="ij")
+        grid_tuples = list(zip(*(g.ravel() for g in grids)))
+        grid_df = pd.DataFrame(grid_tuples, columns=columns)
+
+        # Merge with existing data to find missing combinations
+        merged = pd.merge(
+            grid_df,
+            self.data.loc[:, columns].assign(_orig_index=self.data.index),
+            on=columns,
+            how="left",
+            indicator=True,
+        )
+
+        # Prepare SpectraFrame with missing combinations
+        missing_mask = merged["_merge"] == "left_only"
+        missing_sf = None
+        if missing_mask.any():
+            fill_value = np.nan if fill_value is None else fill_value
+            out_dtype = np.result_type(self.spc.dtype, fill_value)
+            # Create new SpectraFrame with missing entries filled
+            missing_data = merged.loc[missing_mask, columns]
+            missing_spc = np.full(
+                (missing_mask.sum(), self.nwl), fill_value, dtype=out_dtype
+            )
+            missing_sf = SpectraFrame(spc=missing_spc, wl=self.wl, data=missing_data)
+
+        # Prepare existing SpectraFrame (might be a subset of self)
+        existing_mask = merged["_merge"] == "both"
+        n_existing = existing_mask.sum()
+        if n_existing == 0:
+            raise ValueError("No existing spectra found to fill the grid.")
+
+        # Get existing spectra in the order of the merged grid
+        existing_sf = self[merged._orig_index[existing_mask], columns, :]
+        existing_sf.index = merged.index[existing_mask].values
+
+        # Combine existing and missing
+        if missing_sf is None:
+            return existing_sf
+        return SpectraFrame(
+            spc=np.vstack([existing_sf.spc, missing_sf.spc]),
+            wl=self.wl,
+            data=pd.concat([existing_sf.data, missing_sf.data], ignore_index=False),
+        ).sort_index()
+
+    def _get_einops_rest_column(self, kept_columns: list[str]) -> pd.Series:
+        """Encode remaining metadata columns as a deterministic integer axis.
+
+        This is used for einops reductions when the output pattern omits some
+        metadata columns; those omitted columns are collapsed into a single
+        intermediate axis ("rest") prior to reduction.
+        """
+        rest_columns = [col for col in self.data.columns if col not in kept_columns]
+
+        # Pick a non-colliding column name for the intermediate rest ID.
+        rest_col = "_einops_rest"
+        while rest_col in self.data.columns:
+            rest_col = f"{rest_col}_"
+
+        if not rest_columns:
+            rest_codes = np.zeros(self.nspc, dtype=int)
+        else:
+            rest_tuples = list(
+                self.data.loc[:, rest_columns].itertuples(index=False, name=None)
+            )
+            rest_codes = pd.Categorical(rest_tuples).codes
+
+        return pd.Series(
+            rest_codes,
+            name=rest_col,
+            index=self.data.index,
+            dtype=pd.CategoricalDtype(ordered=True),
+        )
+
+    def _prepare_for_einops(
+        self,
+        reduction: str,
+        pattern: str,
+        fill_value: Optional[float] = None,
+        **grid_values: dict[str, list[Any]],
+    ) -> tuple[np.ndarray, str, dict[str, int]]:
+        """Prepare data for einops rearrangement/reduction.
+
+        Handles common part of using einops rearrange/reduce on SpectraFrame data.
+        * Validates the pattern.
+        * Sorts the data by the specified axes (so that reshaping is consistent).
+        * Fills missing grid entries if requested.
+        * Prepares the einops pattern and dict with dimension sizes.
+
+        Parameters
+        ----------
+        reduction : str
+            Type of einops operation: "rearrange" or "reduce".
+        pattern : str
+            Einops-style output pattern (only the right side!). Must include 'wl' for
+            rearrange. For example, if the rearrangement we want is
+            "(y x) wl -> "y x wl" (i.e., convert to a hyperspectral cube),
+            we pass only `pattern="y x wl"`, as the left side is inferred from the data.
+        fill_value : Optional[float]
+            Value to fill missing grid entries. If None (default), missing entries are
+            filled with NaNs (``np.nan``).
+        **grid_values: dict[str, list[Any]],
+            Optional list of specific grid values for custom grids, e.g. padding images.
+
+        Returns
+        -------
+        tuple[np.ndarray, str, dict[str, int]]
+            A tuple with:
+            * Sorted spectral data array ready for einops.
+            * Einops pattern string including both sides.
+            * Dict with sizes for each axis/dimension.
+
+        Raises
+        ------
+        ValueError
+            If the pattern is invalid or incompatible with the data.
+        NotImplementedError
+            If the pattern includes unsupported features such as ellipsis (...).
+
+        Examples
+        --------
+        >>> np.random.seed(42)
+        >>> sf = SpectraFrame(
+        ...     spc=np.arange(4*5).reshape((4, 5)),
+        ...     wl=np.array([400, 500, 600, 700, 800]),
+        ...     data=pd.DataFrame({
+        ...         "y": [1, 0, 1, 0],
+        ...         "x": [0, 0, 1, 1]
+        ...     })
+        ... )
+        >>> sorted_spc, einops_pattern, sizes = sf._prepare_for_einops(
+        ...     reduction="rearrange",
+        ...     pattern="y x wl"
+        ... )
+        >>> print(einops_pattern)
+        (y x) wl -> y x wl
+        >>> print(sizes)
+        {'y': 2, 'x': 2, 'wl': 5}
+        >>> print(sorted_spc)
+        [[ 5  6  7  8  9]
+         [15 16 17 18 19]
+         [ 0  1  2  3  4]
+         [10 11 12 13 14]]
+        """
+        names = _einops_pattern_to_names(pattern)
+
+        # Validate: non-empty pattern
+        if not names:
+            raise ValueError("Pattern is empty or invalid")
+        # Validate: 'wl' must be present for rearrange
+        if reduction == "rearrange" and "wl" not in names:
+            raise ValueError("Pattern must include 'wl'")
+        # Validate: no duplicates
+        if len(names) != len(set(names)):
+            raise ValueError("Pattern contains duplicate axis names")
+
+        # Extract metadata axes (everything except wavelength).
+        axis_names = [a for a in names if a != "wl"]
+
+        # TODO: Does not support elipsis (...) yet
+        if "..." in axis_names:
+            raise NotImplementedError(
+                "Ellipsis (...) in einops patterns is not supported yet."
+            )
+
+        # Validate: all names (except 'wl') are in self.data.columns
+        extra_names = set(names) - set(self.data.columns) - {"wl"}
+        if extra_names:
+            raise ValueError(
+                "Pattern references axes not present in sf.data columns: "
+                f"{sorted(extra_names)!r}"
+            )
+
+        # Prepare einops pattern
+        if reduction == "rearrange":
+            left_pattern = f"({' '.join(axis_names)}) wl"
+        elif reduction == "reduce":
+            axis_part = " ".join(axis_names)
+            left_pattern = f"({axis_part} rest) wl" if axis_part else "(rest) wl"
+        else:
+            raise ValueError(f"Unknown reduction type: {reduction!r}")
+        einops_pattern = f"{left_pattern} -> {pattern}"
+
+        # Prepare the source frame and axis sizes for einops.
+        einops_sf = self
+
+        # For reductions, add "rest" axis for omitted metadata columns
+        # Define "rest" as unique combinations of the omitted columns.
+        rest_col = ""
+        if reduction == "reduce":
+            rest = self._get_einops_rest_column(axis_names)
+            rest_col = rest.name
+            einops_sf = einops_sf.assign(**{rest_col: rest})
+            axis_names.append(rest_col)
+
+        # Fill the grid and sort accordingly.
+        # This has to be done regardeless of fill_value,
+        # because grid_values may specify additional grid points.
+        einops_sf = einops_sf._fill_missing_grid(
+            axis_names, fill_value=fill_value, **grid_values
+        )
+
+        # Get sizes for each axis/dimension
+        sizes = {
+            col: einops_sf.data[col].nunique() for col in axis_names if col != rest_col
+        }
+        # sizes.update(extra_sizes)
+        if "wl" in names:
+            sizes["wl"] = self.nwl
+
+        return einops_sf.spc, einops_pattern, sizes
+
+    def rearrange(
+        self,
+        pattern: str,
+        fill_value: Optional[float] = None,
+        **grid_values: dict[str, list[Any]],
+    ) -> np.ndarray:
+        """Rearrange spectra into a dense multidimensional tensor via einops patterns.
+
+        This is intended for hyperspectral images and other gridded measurements where
+        sample coordinates are stored as columns in ``sf.data`` (e.g. ``y``, ``x``,
+        ``z``, ``time``, ``batch``) and wavelengths are stored in ``sf.wl``. One
+        common use case is reshaping unfolded 2D spectra data matrix into a
+        hyperspectral cube with shape ``(y, x, wl)`` or ``(batch, y, x, wl)``.
+
+        Parameters
+        ----------
+        pattern : str
+            Einops-style *output* pattern. Must include ``wl``, e.g.
+            ``"batch y x wl"`` or ``"(batch y) x wl"``.
+        fill_value : Optional[float], optional
+            Fill missing coordinate combinations (ragged grids) with this value. If
+            None (default), missing entries are filled with NaNs (``np.nan``).
+        **grid_values: dict[str, list[Any]]
+            Optional grid specifications. For each axis an explicit ordered
+            list of axis values (e.g. ``x=[0, 1, 2, 3]``).
+
+        Returns
+        -------
+        np.ndarray
+            A dense tensor matching the requested pattern.
+
+        Raises
+        ------
+        ValueError
+            If the pattern is invalid or incompatible with the data.
+        NotImplementedError
+            If the pattern includes unsupported features such as ellipsis (...).
+
+        Notes
+        -----
+        If padding is applied, the output dtype may be promoted to accommodate
+        ``fill_value`` (e.g. integer spectra padded with ``np.nan`` become floats).
+
+        Examples
+        --------
+        >>> np.random.seed(42)
+        >>> sf = SpectraFrame(
+        ...     spc=np.arange(3*5).reshape((3, 5)),
+        ...     wl=np.array([400, 500, 600, 700, 800]),
+        ...     data=pd.DataFrame({
+        ...         "y": [1, 0, 0],
+        ...         "x": [0, 0, 1]
+        ...     })
+        ... )
+        >>> print(sf)
+           400  500  600  700  800  y  x
+        0    0    1    2    3    4  1  0
+        1    5    6    7    8    9  0  0
+        2   10   11   12   13   14  0  1
+
+        >>> cube = sf.rearrange(pattern="y x wl", fill_value=np.nan)
+        >>> print(cube.shape)
+        (2, 2, 5)
+        >>> print(cube[:,:,0]) # wl=400 slice
+        [[ 5. 10.]
+         [ 0. nan]]
+        """
+        einops = _require_einops()
+        sorted_spc, einops_pattern, sizes = self._prepare_for_einops(
+            "rearrange", pattern, fill_value=fill_value, **grid_values
+        )
+
+        # Validate: total size matches number of spectra
+        sizes.pop("wl", None)  # wl is not counted in total size
+        if np.prod(list(sizes.values())) != len(sorted_spc):
+            raise ValueError(
+                "Cannot reshape: number of spectra does not match the implied grid "
+                "size. Ensure coordinate tuples are unique and that the requested "
+                "grid axes match the available metadata."
+            )
+
+        # Rest of validation and rearrangement is done on the einops side
+        return einops.rearrange(sorted_spc, einops_pattern, **sizes)
+
+    def reduce(
+        self,
+        reducer: Union[str, Callable],
+        pattern: str,
+        *,
+        ignore_na: bool = False,
+        fill_value: Optional[float] = None,
+        **grid_values: Any,
+    ) -> Union[np.ndarray, "SpectraFrame"]:
+        """Reduce spectra along axes implied by an einops-style output pattern.
+
+        The pattern uses metadata axes from ``sf.data`` and may include ``wl`` (to keep
+        spectra) or omit it (to reduce over wavelengths). When the output is 2D with
+        ``wl`` as the last axis the result is equivalent to
+        ``SpectraFrame.apply(reducer, groupby=...).spc``.
+
+        Parameters
+        ----------
+        reducer : Union[str, Callable]
+            Reduction to apply. Supported strings: ``"mean"``, ``"sum"``, ``"min"``,
+            ``"max"``, ``"std"``, ``"median"``. Callables are also supported.
+        pattern : str
+            Einops-style *output* pattern.
+        ignore_na : bool, optional
+            Use NaN-aware reductions for supported string reducers. Defaults to False.
+        fill_value : Optional[float], optional
+            When returning an array, fill missing coordinate combinations in reshaping.
+            If None (default), missing entries are filled with NaNs (``np.nan``).
+        **grid_values: dict[str, list[Any]]
+            Optional grid specifications. For each axis an explicit ordered
+            list of axis values (e.g. ``x=[0, 1, 2, 3]``).
+            NOTE: At the moment, the order of values is not preserved in the output
+            tensor, the values are always sorted. This may change in future releases.
+
+        Returns
+        -------
+        np.ndarray
+            Reduced array matching the requested pattern.
+
+        Notes
+        -----
+        If padding is applied, the output dtype may be promoted to accommodate
+        ``fill_value`` (e.g. integer spectra padded with ``np.nan`` become floats).
+
+        Examples
+        --------
+        >>> np.random.seed(42)
+        >>> sf = SpectraFrame(
+        ...     spc=np.arange(6*5).reshape((6, 5)),
+        ...     wl=np.array([400, 500, 600, 700, 800]),
+        ...     data=pd.DataFrame({
+        ...         "y": [1, 0, 1, 0, 1, 1],
+        ...         "x": [0, 0, 1, 1, 0, 1],
+        ...         "batch": [0, 0, 0, 1, 1, 1]
+        ...     })
+        ... )
+        >>> print(sf)
+           400  500  600  700  800  y  x  batch
+        0    0    1    2    3    4  1  0      0
+        1    5    6    7    8    9  0  0      0
+        2   10   11   12   13   14  1  1      0
+        3   15   16   17   18   19  0  1      1
+        4   20   21   22   23   24  1  0      1
+        5   25   26   27   28   29  1  1      1
+
+        >>> # Reduce to mean spectra per pixel (y, x)
+        >>> reduced = sf.reduce(reducer="mean", pattern="y x wl", fill_value=np.nan)
+        >>> print(reduced.shape)
+        (2, 2, 5)
+        >>> print(reduced[:,:,0]) # wl=400 slice
+        [[ nan  nan]
+         [10.  17.5]]
+
+        >>> # Ignore NaNs and reduce to sum spectra per batch
+        >>> reduced = sf.reduce(
+        ...     reducer="mean",
+        ...     pattern="y x wl",
+        ...     fill_value=np.nan,
+        ...     ignore_na=True
+        ... )
+        >>> print(reduced[:,:,0]) # wl=400 slice
+        [[ 5.  15. ]
+         [10.  17.5]]
+        """
+
+        einops = _require_einops()
+        sorted_spc, einops_pattern, sizes = self._prepare_for_einops(
+            "reduce", pattern, fill_value=fill_value, **grid_values
+        )
+
+        # Parse reducer
+        if isinstance(reducer, str):
+            reducer_key = reducer.lower()
+            reducer_prefix = "nan" if ignore_na else ""
+            numpy_func_name = f"{reducer_prefix}{reducer_key}"
+            reducer_names = ["mean", "sum", "min", "max", "std", "median"]
+            if not hasattr(np, numpy_func_name) or reducer_key not in reducer_names:
+                raise ValueError(
+                    "Unsupported reducer. Expected one of "
+                    "['mean', 'sum', 'min', 'max', 'std', 'median'], "
+                    f"got {reducer!r}."
+                )
+            func: Callable = getattr(np, numpy_func_name)
+        elif callable(reducer):
+            func: Callable = reducer
+        else:
+            raise ValueError("Reducer must be either a string or a callable.")
+
+        return einops.reduce(
+            sorted_spc,
+            einops_pattern,
+            func,
+            **sizes,
+        )
+
+    # ----------------------------------------------------------------------
     # Manipulations
     def normalize(
         self,
@@ -1398,10 +1992,9 @@ class SpectraFrame:
             Dataframe where spectral data is combined with meta data.
             Wavelengths are used as column names for spectral data part.
         """
-        df = pd.concat(
-            [pd.DataFrame(self.spc, columns=self.wl, index=self.data.index), self.data],
-            axis=1,
-        )
+        df = pd.DataFrame(self.spc, columns=self.wl, index=self.data.index)
+        if not self.data.empty:
+            df = pd.concat([df, self.data], axis=1)
 
         if string_names:
             df.columns = df.columns.map(str)
@@ -1548,11 +2141,25 @@ class SpectraFrame:
 
     # ----------------------------------------------------------------------
     def _to_print_dataframe(self) -> pd.DataFrame:
-        if self.nwl > 3:
-            print_df = self[:, :, [0, -1], True].to_pandas()
+        # Get value of pandas display.max_columns option
+        max_columns = pd.options.display.max_columns
+        if max_columns is None:
+            max_columns = float("inf")
+        if max_columns == 0:
+            max_columns = 20  # Default value if option is set to 0
+
+        max_rows = pd.options.display.max_rows
+        if max_rows is None:
+            max_rows = float("inf")
+        if max_rows == 0:
+            max_rows = 60  # Default value if option is set to 0
+
+        if sum(self.shape[1:]) > max_columns:
+            # TODO: improve trancated view
+            print_df = self[:max_rows, :, [0, -1], True].to_pandas()
             print_df.insert(loc=1, column="...", value="...")
         else:
-            print_df = self.to_pandas()
+            print_df = self[:max_rows, :, :, True].to_pandas()
         return print_df
 
     def __str__(self) -> str:

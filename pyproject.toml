@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyspc"
-version = "0.5.2"
+version = "0.6.0"
 license = "MIT"
 description = "Tools for Spectroscopy"
 authors = ["Rustam Guliev <glvrst@gmail.com>"]
@@ -13,6 +13,11 @@ pandas = "^2.1.1"
 matplotlib = "^3.8.0"
 scipy = "^1.11.2"
 pybaselines = "^1.1.0"
+einops = { version = ">=0.6.0", optional = true }
+
+[tool.poetry.extras]
+einops = ["einops"]
+all = ["einops"]
 
 
 [tool.poetry.group.dev.dependencies]
