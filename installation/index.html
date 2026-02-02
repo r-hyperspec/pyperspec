@@ -385,6 +385,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#optional-extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      Optional extras
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-installation" class="md-nav__link">
     <span class="md-ellipsis">
       Verify Installation
@@ -536,6 +545,27 @@
   
   <span class="md-ellipsis">
     Data Manipulation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../user-guide/hyperspectral/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Hyperspectal images and multidimensional data
   </span>
   
 
@@ -791,6 +821,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#optional-extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      Optional extras
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-installation" class="md-nav__link">
     <span class="md-ellipsis">
       Verify Installation
@@ -867,6 +906,12 @@
 <p>To install a specific version, you can specify the commit hash or tag:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>git+https://github.com/r-hyperspec/pyperspec.git@&lt;commit_hash_or_tag&gt;
 </span></code></pre></div>
+<h2 id="optional-extras">Optional extras<a class="headerlink" href="#optional-extras" title="Permanent link">&para;</a></h2>
+<p>Some features require optional dependencies:</p>
+<ul>
+<li>Multidimensional tensor reshaping and reduction (<code>SpectraFrame.rearrange</code>, <code>SpectraFrame.reduce</code>):
+  install with <code>pip install einops</code></li>
+</ul>
 <h2 id="verify-installation">Verify Installation<a class="headerlink" href="#verify-installation" title="Permanent link">&para;</a></h2>
 <p>To verify that <code>pyperspec</code> was installed correctly:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span> <span class="nn">pyspc</span>
