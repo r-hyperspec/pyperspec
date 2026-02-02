@@ -8,7 +8,8 @@
             "args": [
                 "-v",
                 "-s",
-                "${workspaceFolder}/tests"
+                "--doctest-modules",
+                "${workspaceFolder}"
             ],
             "console": "integratedTerminal",
             "justMyCode": true

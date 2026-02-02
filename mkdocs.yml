@@ -98,6 +98,7 @@ nav:
     - Basic Concepts: concepts.md
   - User Guide:
     - Data Manipulation: user-guide/manipulation.md
+    - Hyperspectal images and multidimensional data: user-guide/hyperspectral.md
     - Preprocessing: user-guide/preprocessing.md
     - Visualization: user-guide/visualization.md
     - Import/Export: user-guide/io.md

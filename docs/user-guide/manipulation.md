@@ -196,5 +196,6 @@ spectra_array = np.array(sf)
 
 ## See Also
 
+- [Hyperspectal images and multidimensional data](hyperspectral.md) for reshaping and reduction with `sf.rearrange` / `sf.reduce`
 - [Preprocessing Methods](preprocessing.md) for spectral preprocessing
 - [Visualization](visualization.md) for plotting techniques
