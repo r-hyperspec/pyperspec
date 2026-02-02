@@ -1394,6 +1394,17 @@ class SpectraFrame:
         if not columns:
             raise ValueError("No grid axes specified in `columns`.")
 
+        # Validate: columns is iterable
+        try:
+            columns = list(columns)
+        except TypeError:
+            raise ValueError("`columns` must be iterable")
+
+        # Validate: all columns are in data.columns
+        extra_columns = set(columns) - set(self.data.columns)
+        if extra_columns:
+            raise ValueError(f"Columns not present in data: {sorted(extra_columns)!r}")
+
         # Validate: all custom grid_values are in columns
         missing_columns = set(grid_values.keys()) - set(columns)
         if missing_columns:
@@ -1402,10 +1413,12 @@ class SpectraFrame:
                 f"{sorted(missing_columns)!r}"
             )
 
-        # Validate: all columns are in data.columns
-        extra_columns = set(columns) - set(self.data.columns)
-        if extra_columns:
-            raise ValueError(f"Columns not present in data: {sorted(extra_columns)!r}")
+        # Validate: all grid_values are iterable
+        try:
+            for col, values in grid_values.items():
+                grid_values[col] = list(values)
+        except TypeError:
+            raise ValueError("All `grid_values` must be iterable")
 
         # Validate: no duplicate coordinate tuples for the requested grid axes.
         # Duplicates make gridding ambiguous (more than one spectrum per cell).

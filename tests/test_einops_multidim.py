@@ -5,12 +5,6 @@ import pytest
 from pyspc import SpectraFrame
 
 
-@pytest.fixture()
-def einops_module():
-    """Provide optional einops dependency for tests that require it."""
-    return pytest.importorskip("einops")
-
-
 def _make_cube_sf(batch: int = 2, y: int = 2, x: int = 3, nwl: int = 4) -> SpectraFrame:
     wl = np.linspace(600, 700, nwl)
     rows = []
@@ -24,12 +18,58 @@ def _make_cube_sf(batch: int = 2, y: int = 2, x: int = 3, nwl: int = 4) -> Spect
     return SpectraFrame(np.asarray(spc_rows), wl=wl, data=pd.DataFrame(rows))
 
 
+@pytest.fixture()
+def einops_module():
+    """Provide optional einops dependency for tests that require it."""
+    return pytest.importorskip("einops")
+
+
+@pytest.fixture()
+def cube_sf():
+    """Provide a basic cube SpectraFrame for tests."""
+    return _make_cube_sf()
+
+
+def test_fill_missing_grid_validates_columns():
+    sf = SpectraFrame(
+        spc=[[1, 2], [3, 4]], wl=[400, 500], data={"x": [0, 1], "y": [0, 1]}
+    )
+
+    for val in [None, 1, "", [], ["z"], ["x", "z"]]:
+        with pytest.raises(ValueError):
+            sf._fill_missing_grid(columns=val)
+
+    for grid_val in [{"z": [0, 1]}, {"x": [0, 1], "z": [0, 1]}]:
+        with pytest.raises(ValueError):
+            sf._fill_missing_grid(columns=["x", "y"], grid_values=grid_val)
+
+    for grid_val in [{"x": None}, {"x": 1}, {"x": ""}, {"x": [0, 0]}]:
+        with pytest.raises(ValueError):
+            sf._fill_missing_grid(columns=["x", "y"], grid_values=grid_val)
+
+
+def test_fill_missing_grid_contains_at_least_one_spectrum(cube_sf):
+    # Filling an empty SpectraFrame should raise an error.
+    sf = SpectraFrame(
+        spc=np.empty((0, 2)), wl=[400, 500], data=pd.DataFrame(columns=["x", "y"])
+    )
+
+    with pytest.raises(ValueError):
+        sf._fill_missing_grid(columns=["x", "y"])
+
+    # non-overlapping grid values should raise an error
+    with pytest.raises(ValueError):
+        cube_sf._fill_missing_grid(
+            columns=["x", "y"], grid_values={"x": [200, 300], "y": [200, 300]}
+        )
+
+
 def test_fill_missing_grid_adds_missing_combinations():
     # Fill a ragged (x, y) grid by inserting a missing coordinate combination.
     sf = SpectraFrame(
-        spc=np.array([[1, 2], [3, 4], [5, 6]], dtype=float),
-        wl=np.array([400, 500]),
-        data=pd.DataFrame({"x": [0, 0, 1], "y": [0, 1, 0]}),
+        spc=[[1, 2], [3, 4], [5, 6]],
+        wl=[400, 500],
+        data={"x": [0, 0, 1], "y": [0, 1, 0]},
     )
 
     filled = sf._fill_missing_grid(columns=["x", "y"])
@@ -45,21 +85,36 @@ def test_fill_missing_grid_adds_missing_combinations():
 
 def test_fill_missing_grid_drops_non_axis_metadata_columns():
     sf = SpectraFrame(
-        spc=np.array([[1, 2], [3, 4], [5, 6]], dtype=float),
-        wl=np.array([400, 500]),
-        data=pd.DataFrame({"x": [0, 0, 1], "y": [0, 1, 0], "label": ["a", "b", "c"]}),
+        spc=[[1, 2], [3, 4], [5, 6]],
+        wl=[400, 500],
+        data={"x": [0, 0, 1], "y": [0, 1, 0], "label": ["a", "b", "c"]},
     )
 
     filled = sf._fill_missing_grid(columns=["x", "y"])
     assert filled.data.columns.tolist() == ["x", "y"]
 
 
+def test_prepare_for_einops_validates_pattern(cube_sf):
+    # Invalid patterns should raise errors.
+    for pattern in [
+        None,
+        "",
+        "invalid pattern!",
+        "x y",
+        "x y z wl",
+        "x x wl",
+        "(x y batch) wl -> x y batch wl",
+    ]:
+        with pytest.raises(ValueError):
+            cube_sf._prepare_for_einops(reduction="rearrange", pattern=pattern)
+
+
 def test_prepare_for_einops_builds_pattern_and_sorts():
     # Prepare sorted spectra and sizes for a basic (y, x, wl) rearrangement.
     sf = SpectraFrame(
-        spc=np.arange(4 * 5, dtype=float).reshape((4, 5)),
-        wl=np.array([400, 500, 600, 700, 800]),
-        data=pd.DataFrame({"y": [1, 0, 1, 0], "x": [0, 0, 1, 1]}),
+        spc=np.arange(4 * 5).reshape((4, 5)),
+        wl=[400, 500, 600, 700, 800],
+        data={"y": [1, 0, 1, 0], "x": [0, 0, 1, 1]},
     )
 
     sorted_spc, einops_pattern, sizes = sf._prepare_for_einops(
@@ -77,7 +132,6 @@ def test_prepare_for_einops_builds_pattern_and_sorts():
             [0, 1, 2, 3, 4],
             [10, 11, 12, 13, 14],
         ],
-        dtype=float,
     )
     np.testing.assert_allclose(sorted_spc, expected_sorted)
 
@@ -89,17 +143,23 @@ def test_prepare_for_einops_rejects_ellipsis():
         sf._prepare_for_einops(reduction="rearrange", pattern="... wl")
 
 
+def test_prepare_for_einops_detects_incomplete_dimensions(cube_sf):
+    # Missing grid dimensions should raise an error.
+    for pattern in [
+        "batch wl",
+        "(batch y) wl",
+        "(y x) wl",
+    ]:
+        with pytest.raises(ValueError):
+            cube_sf._prepare_for_einops(reduction="rearrange", pattern=pattern)
+
+
 def test_get_einops_rest_column_avoids_name_collision():
     # Ensure `_get_einops_rest_column` does not collide with existing columns.
     sf = SpectraFrame(
-        spc=np.arange(2 * 2, dtype=float).reshape((2, 2)),
-        wl=np.array([400, 500]),
-        data=pd.DataFrame(
-            {
-                "y": [0, 0],
-                "_einops_rest": ["a", "b"],
-            }
-        ),
+        spc=np.arange(2 * 2).reshape((2, 2)),
+        wl=[400, 500],
+        data=pd.DataFrame({"y": [0, 0], "_einops_rest": ["a", "b"]}),
     )
 
     rest = sf._get_einops_rest_column(kept_columns=["y"])
@@ -221,6 +281,13 @@ def test_reduce_accepts_callable_reducer(einops_module):
     out_callable = sf.reduce(np.mean, "(batch y) x")
     out_str = sf.reduce("mean", "(batch y) x")
     np.testing.assert_allclose(out_callable, out_str)
+
+
+def test_reduce_validates_reducer():
+    sf = _make_cube_sf(batch=2, y=2, x=3, nwl=4)
+    for reducer in [None, 123, 3.14, [], {}, "unknown_reducer", ""]:
+        with pytest.raises(ValueError):
+            sf.reduce(reducer, "(batch y) x")
 
 
 def test_reduce_uses_remaining_columns_as_rest_axis_with_fill_value(einops_module):
