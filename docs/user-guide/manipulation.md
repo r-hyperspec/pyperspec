@@ -96,6 +96,21 @@ from scipy import ndimage
 second_deriv = sf.apply(lambda x: ndimage.gaussian_filter1d(x, sigma=1, order=2), axis=1)
 ```
 
+## Baseline Estimation
+
+Baseline estimation uses the `pybaselines` algorithms via `SpectraFrame.baseline`.
+By default, baseline computation is single-threaded for maximum compatibility. If you
+are running on a free-threaded Python build (or know your environment can benefit),
+set `single_threaded=False` to use multithreading for the per-spectrum computations.
+
+```python
+# Single-threaded (default)
+baseline = sf.baseline("arpls")
+
+# Multi-threaded (experimental; requires thread-safe environment)
+baseline_threaded = sf.baseline("arpls", single_threaded=False)
+```
+
 ## Metadata Manipulation
 
 ### Adding and Removing Columns
