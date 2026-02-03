@@ -2,7 +2,9 @@
 
 ```bash
 # Update the documentation on GitHub Pages
-mkdocs gh-deploy
+mkdocs gh-deploy --clean
+# Clean local mkdocs build artifacts afterwards
+rm -rf site
 ```
 
 ```bash

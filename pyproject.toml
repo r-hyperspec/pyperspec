@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyspc"
-version = "0.6.0"
+version = "0.6.1"
 license = "MIT"
 description = "Tools for Spectroscopy"
 authors = ["Rustam Guliev <glvrst@gmail.com>"]
@@ -32,6 +32,10 @@ mkdocstrings = { extras = ["python"], version = "^0.25.1" }
 pymdown-extensions = "^10.9"
 mkdocs-exclude = "^1.0.2"
 pytest-cov = "^5.0.0"
+
+[tool.pytest.ini_options]
+# mkdocs output directory; can contain copies of scripts from `docs/` which breaks pytest imports.
+norecursedirs = ["site"]
 
 [tool.ruff]
 # Enable the pycodestyle (`E`) and Pyflakes (`F`) rules by default.
