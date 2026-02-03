@@ -1,6 +1,9 @@
 import os
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional, Union, Tuple, Callable, TypeVar
+import pickle
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from multiprocessing import get_context
+from typing import Any, Optional, Union, Tuple, Callable, TypeVar, Literal
 from pathlib import Path
 import warnings
 import re
@@ -20,6 +23,28 @@ from .peaks import around_max_peak_fit
 __all__ = ["SpectraFrame"]
 
 PathLike = TypeVar("PathLike", str, os.PathLike)
+StartMethod = Literal["fork", "spawn", "forkserver"]
+
+_NUMPY_VECTORIZABLE_APPLY_FUNCTIONS = frozenset(
+    {
+        "amin",
+        "amax",
+        "min",
+        "max",
+        "sum",
+        "mean",
+        "std",
+        "median",
+        "quantile",
+        "nanmin",
+        "nanmax",
+        "nansum",
+        "nanmean",
+        "nanstd",
+        "nanmedian",
+        "nanquantile",
+    }
+)
 
 
 def _require_einops():
@@ -54,22 +79,68 @@ def _einops_pattern_to_names(pattern: str) -> list[str]:
     return names
 
 
-def _thread_baseline_func(
+def _baseline_func(
     wl: np.ndarray,
     method: str,
     kwargs: dict[str, Any],
 ) -> Callable[[np.ndarray], np.ndarray]:
-    """Create a baseline function for use within a single thread."""
-    if method == "rubberband":
-        return lambda y: rubberband(wl, y, **kwargs)
+    """Create a baseline function with captured x-values and method settings."""
 
     baseline_fitter = pybaselines.Baseline(x_data=wl)
-    if not hasattr(baseline_fitter, method):
-        raise ValueError(
-            "Unknown method. Method must be either " "from `pybaselines` or 'rubberband'"
-        )
-    baseline_method = getattr(baseline_fitter, method)
-    return lambda y: baseline_method(y, **kwargs)[0]
+    baseline_method = _baseline_method_from_fitter(
+        baseline_fitter, wl=wl, method=method
+    )
+    return lambda y: baseline_method(y, kwargs)
+
+
+def _apply_callable_worker(
+    y: np.ndarray,
+    *,
+    func: Callable,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Run a generic row-wise callable in a process worker."""
+
+    return func(y, *args, **kwargs)
+
+
+def _baseline_worker(
+    y: np.ndarray,
+    *,
+    wl: np.ndarray,
+    method: str,
+    kwargs: dict[str, Any],
+) -> np.ndarray:
+    """Compute baseline for a single spectrum in a pickle-friendly way."""
+
+    # Create the fitter inside the worker to avoid pickling non-serializable objects.
+    baseline_fitter = pybaselines.Baseline(x_data=wl)
+    baseline_method = _baseline_method_from_fitter(
+        baseline_fitter, wl=wl, method=method
+    )
+    return baseline_method(y, kwargs)
+
+
+def _baseline_method_from_fitter(
+    baseline_fitter: pybaselines.Baseline,
+    *,
+    wl: np.ndarray,
+    method: str,
+) -> Callable[[np.ndarray, dict[str, Any]], np.ndarray]:
+    """Resolve the baseline callable given a configured baseline fitter."""
+
+    # Prefer `pybaselines` methods when available; otherwise use the built-in fallback.
+    if hasattr(baseline_fitter, method):
+        baseline_method = getattr(baseline_fitter, method)
+        return lambda y, kwargs: baseline_method(y, **kwargs)[0]
+
+    if method == "rubberband":
+        return lambda y, kwargs: rubberband(wl, y, **kwargs)
+
+    raise ValueError(
+        "Unknown method. Method must be either from `pybaselines` or 'rubberband'"
+    )
 
 
 def _sorted_unique(values: pd.Series) -> list[Any]:
@@ -1106,69 +1177,247 @@ class SpectraFrame:
 
         return groupby
 
-    def _apply_func(
-        self,
-        func: Union[str, Callable],
-        *args,
-        data: Optional[np.ndarray] = None,
-        axis: int = 1,
-        **kwargs,
-    ) -> np.ndarray:
-        """Apply a function alog an axis
-
-        Dispatches calculation to `np.apply_alog_axis` (if func is callable) or
-        `np.<func>` (if func is a string)
-
-        Parameters
-        ----------
-        func : Union[str, Callable]
-            Either a string with the name of numpy funciton, e.g "max", "mean", etc.
-            Or a callable function that can be passed to `numpy.apply_along_axis`
-        data : np.ndarray, optional
-            To which data apply the function, by default `self.spc`
-            This parameter is useful for cases when the function must be applied on
-            different parts of the spctral data, e.g. when groupby is used
-        axis : int, optional
-            Standard axis. Same as in `numpy` or `pandas`, by default 1
-
-        Returns
-        -------
-        np.ndarray
-            The output array. The shape of out is identical to the shape of data, except
-            along the axis dimension. This axis is removed, and replaced with new
-            dimensions equal to the shape of the return value of func. So if func
-            returns a scalar, the output will be eirther single row (axis=0) or
-            single column (axis=1) matrix.
-
-        Raises
-        ------
-        ValueError
-            Function with provided name `func` was not found in `numpy`
-        """
-        # Check and prepare parameters
-        if data is None:
-            data = self.spc
+    def _classify_apply_func(
+        self, func: Union[str, Callable]
+    ) -> Tuple[Literal["numpy_vectorized", "callable_generic"], Callable]:
+        """Classify and normalize an apply function."""
 
         if isinstance(func, str):
-            name = func
-            if hasattr(np, name):
-                func = getattr(np, name)
+            if not hasattr(np, func):
+                raise ValueError(f"Could not find function {func} in `numpy`")
+            return "numpy_vectorized", getattr(np, func)
+
+        if not callable(func):
+            raise TypeError("`func` must be either a string or a callable")
+
+        # Prefer NumPy vectorized implementations when a matching callable is provided.
+        func_name = getattr(func, "__name__", "")
+        func_module = getattr(func, "__module__", "")
+        if (
+            func_module.startswith("numpy")
+            and (func_name in _NUMPY_VECTORIZABLE_APPLY_FUNCTIONS)
+            and hasattr(np, func_name)
+        ):
+            return "numpy_vectorized", getattr(np, func_name)
+
+        return "callable_generic", func
+
+    def _reshape_apply_result(self, result: np.ndarray, axis: int) -> np.ndarray:
+        """Normalize apply output shape to 2D spectral matrix."""
+
+        if result.ndim == 1:
+            result = result.reshape((1, -1)) if axis == 0 else result.reshape((-1, 1))
+
+        if result.ndim != 2:
+            raise ValueError(
+                "Applied function must return a scalar or a 1D array for each slice."
+            )
+
+        return result
+
+    def _apply_numpy_vectorized(
+        self,
+        func: Callable,
+        *args,
+        data: np.ndarray,
+        axis: int,
+        **kwargs,
+    ) -> np.ndarray:
+        """Apply a NumPy vectorized function."""
+
+        result = np.asarray(func(data, *args, axis=axis, **kwargs))
+
+        # Functions like np.quantile return dimensions in a different order.
+        if (result.ndim > 1) and (axis == 1):
+            result = result.T
+
+        return self._reshape_apply_result(result, axis=axis)
+
+    def _apply_callable_serial(
+        self,
+        func: Callable,
+        *args,
+        data: np.ndarray,
+        axis: int,
+        **kwargs,
+    ) -> np.ndarray:
+        """Apply a generic callable using numpy.apply_along_axis."""
+
+        result = np.apply_along_axis(func, axis, data, *args, **kwargs)
+        return self._reshape_apply_result(np.asarray(result), axis=axis)
+
+    def _stack_parallel_apply_outputs(self, outputs: list[Any]) -> np.ndarray:
+        """Validate and stack row-wise outputs from worker processes."""
+
+        if len(outputs) == 0:
+            raise ValueError("Cannot apply function to empty spectral data.")
+
+        normalized = [np.asarray(out) for out in outputs]
+        first_shape = normalized[0].shape
+        for out in normalized[1:]:
+            if out.shape != first_shape:
+                raise ValueError(
+                    "Parallel apply requires a consistent output shape for every row."
+                )
+
+        if normalized[0].ndim == 0:
+            scalar_result = np.asarray(normalized)
+            return self._reshape_apply_result(scalar_result, axis=1)
+
+        stacked_result = np.stack(normalized, axis=0)
+        return self._reshape_apply_result(stacked_result, axis=1)
+
+    def _apply_callable_parallel_rows(
+        self,
+        func: Callable,
+        *args,
+        data: np.ndarray,
+        max_workers: Optional[int],
+        start_method: Optional[StartMethod],
+        chunksize: Optional[int],
+        **kwargs,
+    ) -> np.ndarray:
+        """Apply a generic callable row-wise in worker processes."""
+
+        worker_func = partial(
+            _apply_callable_worker,
+            func=func,
+            args=args,
+            kwargs=kwargs,
+        )
+
+        # Validate pickling before starting worker processes.
+        try:
+            pickle.dumps(worker_func)
+        except Exception as e:
+            raise ValueError(
+                "Parallel apply requires a pickleable callable and arguments."
+            ) from e
+
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=get_context(start_method) if start_method is not None else None,
+        ) as pool:
+            if chunksize is None:
+                outputs = list(pool.map(worker_func, data))
             else:
-                raise ValueError(f"Could not find function {name} in `numpy`")
+                outputs = list(pool.map(worker_func, data, chunksize=chunksize))
 
-            res: np.ndarray = func(data, *args, axis=axis, **kwargs)
-            # Functions like np.quantile behave differently than apply_alog_axis
-            # Here we make the shape of the matrix to be the same
-            if (res.ndim > 1) and (axis == 1):
-                res = res.T
-        else:
-            res = np.apply_along_axis(func, axis, data, *args, **kwargs)
+        return self._stack_parallel_apply_outputs(outputs)
 
-        # Reshape the result to keep dimenstions
-        if res.ndim == 1:
-            res = res.reshape((1, -1)) if axis == 0 else res.reshape((-1, 1))
+    def _validate_parallel_apply(
+        self,
+        *,
+        parallel: bool,
+        func_kind: Literal["numpy_vectorized", "callable_generic"],
+        axis: int,
+        groupby: Union[list[str], None],
+        chunksize: Optional[int],
+    ) -> None:
+        """Validate parallel apply strategy and options."""
 
-        return res
+        if (chunksize is not None) and (chunksize < 1):
+            raise ValueError("`chunksize` must be >= 1")
+
+        if not parallel:
+            return
+
+        if groupby is not None:
+            raise ValueError("`parallel=True` does not support `groupby`.")
+
+        if func_kind == "numpy_vectorized":
+            raise ValueError(
+                "`parallel=True` is only supported for non-vectorized callables."
+            )
+
+        if axis != 1:
+            raise ValueError("`parallel=True` currently supports only `axis=1`.")
+
+    def _apply_dispatch(
+        self,
+        func: Callable,
+        *args,
+        data: np.ndarray,
+        axis: int,
+        parallel: bool,
+        func_kind: Literal["numpy_vectorized", "callable_generic"],
+        max_workers: Optional[int],
+        start_method: Optional[StartMethod],
+        chunksize: Optional[int],
+        **kwargs,
+    ) -> np.ndarray:
+        """Dispatch apply execution to vectorized, serial, or parallel path."""
+
+        if func_kind == "numpy_vectorized":
+            return self._apply_numpy_vectorized(
+                func,
+                *args,
+                data=data,
+                axis=axis,
+                **kwargs,
+            )
+
+        if parallel:
+            return self._apply_callable_parallel_rows(
+                func,
+                *args,
+                data=data,
+                max_workers=max_workers,
+                start_method=start_method,
+                chunksize=chunksize,
+                **kwargs,
+            )
+
+        return self._apply_callable_serial(
+            func,
+            *args,
+            data=data,
+            axis=axis,
+            **kwargs,
+        )
+
+    def _apply_grouped(
+        self,
+        func: Callable,
+        *args,
+        groupby: list[str],
+        func_kind: Literal["numpy_vectorized", "callable_generic"],
+        **kwargs,
+    ) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Apply function per group and combine outputs."""
+
+        grouped = self.to_pandas().groupby(groupby, observed=True)[self.wl]
+
+        spc_list: list[np.ndarray] = []
+        data_list: list[pd.DataFrame] = []
+        for key, group in grouped:
+            # Normalize group keys for both 1-column and multi-column groupby.
+            key_values = key if isinstance(key, tuple) else (key,)
+            group_values = dict(zip(groupby, key_values))
+
+            group_result = self._apply_dispatch(
+                func,
+                *args,
+                data=group.values,
+                axis=0,
+                parallel=False,
+                func_kind=func_kind,
+                max_workers=None,
+                start_method=None,
+                chunksize=None,
+                **kwargs,
+            )
+            spc_list.append(group_result)
+            data_list.append(
+                pd.DataFrame(
+                    {**group_values, "group_index": range(group_result.shape[0])}
+                )
+            )
+
+        return (
+            np.concatenate(spc_list, axis=0),
+            pd.concat(data_list, axis=0, ignore_index=True),
+        )
 
     def apply(
         self,
@@ -1176,6 +1425,10 @@ class SpectraFrame:
         *args,
         groupby: Union[str, list[str], None] = None,
         axis: int = 0,
+        parallel: bool = False,
+        max_workers: Optional[int] = None,
+        start_method: Optional[StartMethod] = None,
+        chunksize: Optional[int] = None,
         **kwargs,
     ) -> "SpectraFrame":
         """Apply function to the spectral data
@@ -1191,6 +1444,16 @@ class SpectraFrame:
         axis : int, optional
              Standard axis. Same as in `numpy` or `pandas`, by default 1 when groupby
              is not provided, and 0 when provided.
+        parallel : bool, optional
+            If True, apply callables with process-based parallelism. Supported only
+            for callables that are not NumPy-vectorized, with `axis=1` and no
+            `groupby`.
+        max_workers : int, optional
+            Maximum number of worker processes for parallel mode.
+        start_method : {"fork", "spawn", "forkserver"}, optional
+            Process start method for multiprocessing context in parallel mode.
+        chunksize : int, optional
+            Chunk size for `ProcessPoolExecutor.map` in parallel mode.
 
         Returns
         -------
@@ -1206,34 +1469,40 @@ class SpectraFrame:
         # Prepare arguments
         axis = self._get_axis(axis, groupby)
         groupby = self._get_groupby(groupby)
+        func_kind, resolved_func = self._classify_apply_func(func)
+        self._validate_parallel_apply(
+            parallel=parallel,
+            func_kind=func_kind,
+            axis=axis,
+            groupby=groupby,
+            chunksize=chunksize,
+        )
 
         # Prepare default values
         new_wl = self.wl if axis == 0 else None
         new_data = self.data if axis == 1 else None
 
         if groupby is None:
-            new_spc = self._apply_func(func, *args, axis=axis, **kwargs)
+            new_spc = self._apply_dispatch(
+                resolved_func,
+                *args,
+                data=self.spc,
+                axis=axis,
+                parallel=parallel,
+                func_kind=func_kind,
+                max_workers=max_workers,
+                start_method=start_method,
+                chunksize=chunksize,
+                **kwargs,
+            )
         else:
-            # Prepare a dataframe for groupby aggregation
-            grouped = self.to_pandas().groupby(groupby, observed=True)[self.wl]
-
-            # Prepare list of group names as dicts {'column name': 'column value', ...}
-            keys = [i for i, _ in grouped]
-            groups = [dict(zip(groupby, gr)) for gr in keys]
-
-            # Apply to each group
-            spc_list = [
-                self._apply_func(func, *args, data=group.values, axis=0, **kwargs)
-                for _, group in grouped
-            ]
-            data_list = [
-                pd.DataFrame({**gr, "group_index": range(spc_list[i].shape[0])})
-                for i, gr in enumerate(groups)
-            ]
-
-            # Combine
-            new_spc = np.concatenate(spc_list, axis=0)
-            new_data = pd.concat(data_list, axis=0, ignore_index=True)
+            new_spc, new_data = self._apply_grouped(
+                resolved_func,
+                *args,
+                groupby=groupby,
+                func_kind=func_kind,
+                **kwargs,
+            )
 
         # If the applied function returns same number of wavelenghts
         # we assume that wavelengths are the same, e.g. baseline,
@@ -1964,7 +2233,10 @@ class SpectraFrame:
         self,
         method: str,
         *,
-        single_threaded: bool = True,
+        parallel: bool = False,
+        max_workers: Optional[int] = None,
+        start_method: Optional[StartMethod] = None,
+        chunksize: Optional[int] = None,
         **kwargs,
     ) -> "SpectraFrame":
         """Dispatcher for spectra baseline estimation
@@ -1978,10 +2250,16 @@ class SpectraFrame:
         method : str
             A name of the method in `pybaselines` package (e.g. "airpls", "snip"),
             or "rubberband"
-        single_threaded : bool, optional
-            If True, uses the classic single-threaded baseline computation. If False,
-            uses multithreading for baseline estimation by fitting each spectrum in
-            a thread.
+        parallel : bool, optional
+            If True, apply baseline estimation per spectrum in parallel using
+            `SpectraFrame.apply(..., parallel=True)`.
+        max_workers : int, optional
+            Maximum number of worker processes.
+        start_method : {"fork", "spawn", "forkserver"}, optional
+            Process start method for multiprocessing context. Forced to "spawn"
+            when method is "loess".
+        chunksize : int, optional
+            Chunk size for worker scheduling in parallel mode.
         kwargs: dict
             Additional parameters to pass to the baseline correction method
 
@@ -1995,19 +2273,32 @@ class SpectraFrame:
         ValueError
             Unknown baseline method provided
         """
-        if single_threaded:
-            baseline_func = _thread_baseline_func(self.wl, method, kwargs)
-            return self.apply(baseline_func, axis=1)
 
-        def thread_baseline_func(y: np.ndarray) -> np.ndarray:
-            baseline_func = _thread_baseline_func(self.wl, method, kwargs)
-            return baseline_func(y)
+        if parallel and (method == "loess"):
+            if (start_method is not None) and (start_method != "spawn"):
+                warnings.warn(
+                    "Overriding 'start_method' to 'spawn' for 'loess' baseline method\n"
+                    "More details here: https://pybaselines.readthedocs.io/en/latest/performance.html#parallel-processing"
+                )
+            start_method = "spawn"
 
-        baselines = np.empty_like(self.spc)
-        with ThreadPoolExecutor() as pool:
-            for index, baseline in enumerate(pool.map(thread_baseline_func, self.spc)):
-                baselines[index] = baseline
-        return SpectraFrame(baselines, wl=self.wl, data=self.data)
+        if parallel:
+            baseline_func = partial(
+                _baseline_worker,
+                wl=self.wl,
+                method=method,
+                kwargs=kwargs,
+            )
+        else:
+            baseline_func = _baseline_func(self.wl, method, kwargs)
+        return self.apply(
+            baseline_func,
+            axis=1,
+            parallel=parallel,
+            max_workers=max_workers,
+            start_method=start_method,
+            chunksize=chunksize,
+        )
 
     def sbaseline(self, method: str, **kwargs) -> "SpectraFrame":
         """Subtract baseline from the spectra
