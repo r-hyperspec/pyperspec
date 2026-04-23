@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyspc"
-version = "0.6.0"
+version = "0.6.1"
 license = "MIT"
 description = "Tools for Spectroscopy"
 authors = ["Rustam Guliev <glvrst@gmail.com>"]

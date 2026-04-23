@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from numpy.testing import assert_array_equal, assert_allclose
 from pandas.testing import assert_frame_equal, assert_series_equal, assert_index_equal
 import pytest
@@ -968,6 +969,19 @@ class TestSpectraFramePlot:
         frame.plot(rows="B", columns="A")
         frame.plot(rows="B", columns=[1, 2, 3, 4, 5, 6])
         frame.plot(columns="B", rows=[1, 2, 3, 4, 5, 6])
+
+    def test_plot_with_many_continuous_colors(self):
+        nspc = 300
+        frame = SpectraFrame(
+            np.arange(nspc * 4).reshape((nspc, 4)),
+            wl=[400, 600, 800, 1000],
+            data=pd.DataFrame({"concentration": np.linspace(0, 1, nspc)}),
+        )
+
+        fig, axs = frame.plot(colors="concentration", palette="viridis")
+
+        assert len(axs[0, 0].get_lines()) == nspc
+        plt.close(fig)
 
 
 class TestSpectraFrameMisc:

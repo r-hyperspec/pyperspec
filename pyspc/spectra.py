@@ -2424,7 +2424,7 @@ class SpectraFrame:
         assert isinstance(palette, list)
         cmap = dict(zip(colorby_series.cat.categories, palette[:ncolors]))
         cmap.update({"NA": "gray"})
-        colors_series = colorby_series.cat.rename_categories(cmap)
+        colors_series = colorby_series.astype(object).map(cmap).fillna("gray")
 
         # Get the figure and the axes for plot
         if fig is None:
@@ -2441,7 +2441,8 @@ class SpectraFrame:
 
         # Prepare legend lines if needed
         legend_lines = [
-            Line2D([0], [0], color=c, lw=4) for c in colors_series.cat.categories
+            Line2D([0], [0], color=cmap[category], lw=4)
+            for category in colorby_series.cat.categories
         ]
 
         # For each combination of row and column categories
