@@ -2101,9 +2101,14 @@ class SpectraFrame:
                 rgb2hex(plt.get_cmap(palette, ncolors)(i)) for i in range(ncolors)
             ]
         assert isinstance(palette, list)
-        cmap = dict(zip(colorby_series.cat.categories, palette[:ncolors]))
+        if len(palette) == 0:
+            raise ValueError("Palette must contain at least one color.")
+
+        color_categories = list(colorby_series.cat.categories)
+        category_colors = [palette[i % len(palette)] for i in range(ncolors)]
+        cmap = dict(zip(color_categories, category_colors))
         cmap.update({"NA": "gray"})
-        colors_series = colorby_series.cat.rename_categories(cmap)
+        colors_series = colorby_series.map(cmap).astype(str)
 
         # Get the figure and the axes for plot
         if fig is None:
@@ -2120,7 +2125,8 @@ class SpectraFrame:
 
         # Prepare legend lines if needed
         legend_lines = [
-            Line2D([0], [0], color=c, lw=4) for c in colors_series.cat.categories
+            Line2D([0], [0], color=cmap[category], lw=4)
+            for category in color_categories
         ]
 
         # For each combination of row and column categories

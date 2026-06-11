@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from numpy.testing import assert_array_equal, assert_allclose
 from pandas.testing import assert_frame_equal, assert_series_equal, assert_index_equal
 import pytest
@@ -968,6 +969,22 @@ class TestSpectraFramePlot:
         frame.plot(rows="B", columns="A")
         frame.plot(rows="B", columns=[1, 2, 3, 4, 5, 6])
         frame.plot(columns="B", rows=[1, 2, 3, 4, 5, 6])
+
+    def test_plot_accepts_many_color_categories_with_continuous_palette(self):
+        n_categories = 512
+        frame = SpectraFrame(
+            np.column_stack([np.arange(n_categories), np.arange(n_categories) + 1]),
+            wl=[400, 600],
+            data=pd.DataFrame({"group": [f"group_{i}" for i in range(n_categories)]}),
+        )
+
+        fig, axs = frame.plot(colors="group", palette="viridis", legend=False)
+
+        try:
+            assert axs.shape == (1, 1)
+            assert len(axs[0, 0].lines) == n_categories
+        finally:
+            plt.close(fig)
 
 
 class TestSpectraFrameMisc:
