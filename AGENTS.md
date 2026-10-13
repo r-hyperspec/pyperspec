@@ -8,8 +8,8 @@ The package does not aim to re-implement all algorithms, but rather to provide a
 # Development guidelines
 
 ## Setup instructions:
-* Python 3.9+
-* Use `poetry` for management
+* Python 3.12+
+* Use `uv` for management; run `uv sync --locked --all-extras` to set up `.venv`
 * Update the package version in `pyproject.toml`, if not updated yet
 * If available, use virtual environment specified in '.vscode/settings.json -> python.defaultInterpreterPath` for running python commands
 * Assume dev environment has all packages installed
@@ -18,7 +18,7 @@ The package does not aim to re-implement all algorithms, but rather to provide a
 * Create a new branch for each feature/bugfix
 * Follow TDD principles: write tests before implementing features. Make sure to cover edge cases.
 * Don't run tests and linter unless explicitly asked.
-* If asked to, use `poetry run pytest --doctest-modules` to run tests.
+* If asked to, use `uv run pytest --doctest-modules` to run tests.
 * **Test interface behavior, not implementation details:** Tests should verify
 that the public API behaves correctly, not how it's implemented internally. This
 makes tests resilient to refactoring and ensures the contract with users remains
@@ -30,8 +30,8 @@ intact.
 * Follow PEP8 guidelines
 * Use type hints throughout the codebase
 * For linting use black and ruff:
-  - `poetry run black .`
-  - `poetry run ruff check --fix .`
+  - `uv run black .`
+  - `uv run ruff check --fix .`
 * Use numpydoc style for docstrings. For public functions/methods, include examples helpful for users.
 * Each block of code should have a *short* explaining comment.
 

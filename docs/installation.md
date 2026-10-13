@@ -2,7 +2,7 @@
 
 ## Requirements
 
-`pyperspec` requires Python 3.9 or higher and depends on the following packages:
+`pyperspec` requires Python 3.12 or higher and depends on the following packages:
 
 - `pandas >= 2.1.1`
 - `matplotlib >= 3.8.0`

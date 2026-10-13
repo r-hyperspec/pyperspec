@@ -2,17 +2,17 @@
 
 ```bash
 # Update the documentation on GitHub Pages
-mkdocs gh-deploy --clean
+uv run mkdocs gh-deploy --clean
 # Clean local mkdocs build artifacts afterwards
 rm -rf site
 ```
 
 ```bash
 # Run mkdocs locally
-mkdocs serve
+uv run mkdocs serve
 ```
 
 ```bash
 # Run tests with doctests
-pytest --doctest-modules .
+uv run pytest --doctest-modules .
 ```
