@@ -1,31 +1,250 @@
 """Plot spectral arrays with Matplotlib."""
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.axes import Axes
-from matplotlib.colors import Colormap, is_color_like, to_rgba_array
+from matplotlib.colors import Colormap, is_color_like, to_rgba, to_rgba_array
 from matplotlib.figure import Figure
 from numpy.typing import ArrayLike
 
 __all__ = ("plot_spectra",)
 
 
+def _palette_colors(palette: ArrayLike | Colormap, count: int) -> np.ndarray:
+    """Sample a colormap or cycle explicit colors to the requested count.
+
+    Generate ``count`` colors given either list of specific colors
+    (e.g. ``["red", "blue"]``) or a cmap name/object (e.g. ``"viridis"``).
+    For a list of specific values, colors are generated in cycle.
+
+    Parameters
+    ----------
+    palette : str, matplotlib.colors.Colormap, or sequence of colors
+        Colormap name, colormap object, or explicit colors.
+    count : int
+        Number of colors to produce. Zero produces an empty color array.
+
+    Returns
+    -------
+    numpy.ndarray of shape (count, 4)
+        RGBA colors in palette order.
+
+    Examples
+    --------
+    >>> from matplotlib.colors import to_hex
+    >>> [to_hex(c) for c in _palette_colors(["red", "blue"], 3)]
+    ['#ff0000', '#0000ff', '#ff0000']
+    >>> colors = _palette_colors("viridis", 4)
+    >>> colors = _palette_colors(plt.get_cmap("viridis"), 4)
+    """
+    if isinstance(palette, (str, Colormap)):
+        cmap = plt.get_cmap(palette) if isinstance(palette, str) else palette
+        return cmap(np.linspace(0, 1, count))
+
+    colors = to_rgba_array(palette)
+    if len(colors) == 0:
+        raise ValueError("palette must contain at least one color.")
+    return colors[np.arange(count) % len(colors)]
+
+
+def _validate_array(
+    values: ArrayLike,
+    name: str,
+    *,
+    ndim: int | None = None,
+    shape: tuple[int, ...] | None = None,
+    na: Literal["ignore", "raise"] = "ignore",
+    inf: Literal["ignore", "raise"] = "raise",
+) -> np.ndarray:
+    """Convert to a real numeric array and validate its shape and missing values.
+
+    Parameters
+    ----------
+    values : array-like
+        Real numeric values to validate.
+    name : str
+        Parameter name included in error messages.
+    ndim : int, optional
+        Required number of dimensions.
+    shape : tuple of int, optional
+        Required exact shape.
+    na : {"ignore", "raise"}, default="ignore"
+        Whether NaN values are accepted or rejected.
+    inf : {"ignore", "raise"}, default="raise"
+        Whether infinite values are accepted or rejected.
+
+    Returns
+    -------
+    numpy.ndarray
+        Validated array, without copying an existing array unnecessarily.
+
+    Raises
+    ------
+    ValueError
+        If shape or missing-value requirements are violated.
+    TypeError
+        If values are not real numeric data.
+    """
+    # Check structure before applying numeric value checks.
+    array = np.asarray(values)
+    if ndim is not None and array.ndim != ndim:
+        raise ValueError(f"{name} must be a {ndim}D array.")
+    if shape is not None and array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}.")
+    if array.dtype.kind not in "iuf":
+        raise TypeError(f"{name} must contain real numeric values.")
+
+    # Coordinates reject all nonfinite values; intensities and bounds allow gaps.
+    if na == "raise" and np.isnan(array).any():
+        raise ValueError(f"{name} must not contain NaN.")
+    if inf == "raise" and np.isinf(array).any():
+        raise ValueError(f"{name} must not contain infinity.")
+    return array
+
+
+def _resolve_color_params(
+    color: ArrayLike | None = None,
+    hue: ArrayLike | None = None,
+    palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
+    *,
+    count: int,
+) -> tuple[list[ArrayLike], np.ndarray | None, list[Any], str | None]:
+    """Resolve colors and categorical metadata without creating plot artists.
+
+    Parameters
+    ----------
+    color : Matplotlib color or sequence of colors, optional
+        One literal color for all spectra, or exactly one color per spectrum.
+        RGB/RGBA vectors represent one color. Cannot be combined with hue or
+        palette.
+    hue : array-like of shape (count,), optional
+        Category values used to map palette entries to spectra.
+    palette : str, colormap, sequence of colors, or mapping, optional
+        Color source for spectra or hue categories. Mappings require hue.
+    count : int
+        Number of spectra whose colors must be resolved.
+
+    Returns
+    -------
+    line_colors : list
+        One Matplotlib color per spectrum. Defaults to the RGBA value of C0
+        from the current style for every spectrum.
+    codes : numpy.ndarray or None
+        Per-spectrum category codes, or None without hue.
+    categories : list
+        Category labels in legend order; empty without hue.
+    title : str or None
+        Hue Series name, if present.
+
+    Examples
+    --------
+    Unspecified colors share the first style color. A literal selects another:
+
+    >>> colors, codes, categories, title = _resolve_color_params(count=2)
+    >>> colors, codes, categories, title = _resolve_color_params(
+    ...     color="black", count=2
+    ... )
+    >>> colors
+    ['black', 'black']
+
+    Hue codes follow pandas category order, with -1 for missing values:
+
+    >>> groups = pd.Series(["B", "A", "B", None], name="Group")
+    >>> colors, codes, categories, title = _resolve_color_params(
+    ...     hue=groups, count=4
+    ... )
+    >>> codes.tolist(), categories, title
+    ([1, 0, 1, -1], ['A', 'B'], 'Group')
+
+    A categorical input preserves its declared order:
+
+    >>> groups = pd.Categorical(["B", "A"], categories=["B", "A", "unused"])
+    >>> colors, codes, categories, title = _resolve_color_params(
+    ...     hue=groups, count=2
+    ... )
+    >>> codes.tolist(), categories
+    ([0, 1], ['B', 'A'])
+    """
+    # Reject competing instructions before selecting a color source.
+    if color is not None and palette is not None:
+        raise ValueError("color and palette cannot be used together.")
+    if color is not None and hue is not None:
+        raise ValueError("color and hue cannot be used together.")
+    if hue is None and palette is not None and isinstance(palette, Mapping):
+        raise ValueError("palette mappings require hue.")
+    if hue is not None and (isinstance(hue, (str, bytes)) or np.ndim(hue) != 1):
+        raise ValueError("hue must be a 1D vector with one value per spectrum.")
+    if hue is not None and len(hue) != count:
+        raise ValueError(f"hue must have length {count}.")
+
+    # If nothing is provided we just give a single value
+    if hue is None and palette is None and color is None:
+        return [to_rgba("C0")] * count, None, [], None
+
+    # Resolve category colors and keep missing values separate from category labels.
+    if hue is not None:
+        values = pd.Series(hue).reset_index(drop=True).astype("category")
+        values = values.cat.remove_unused_categories()
+        codes = values.cat.codes.to_numpy()
+        categories = values.cat.categories.tolist()
+        title = None if values.name is None else str(values.name)
+
+        # From hue values to specific RGB colors
+        if palette is None:
+            hue_palette = plt.rcParams["axes.prop_cycle"].by_key().get("color", ("C0",))
+            category_colors = _palette_colors(hue_palette, len(categories))
+        elif isinstance(palette, Mapping):
+            if not set(categories).issubset(palette.keys()):
+                missing = list(set(categories).difference(palette.keys()))
+                raise ValueError(f"palette is missing hue categories: {missing!r}.")
+            category_colors = to_rgba_array(
+                [palette[category] for category in categories]
+            )
+        else:
+            category_colors = _palette_colors(palette, len(categories))
+
+        resolved_colors = np.tile(to_rgba("gray"), (count, 1))
+        present = codes >= 0
+        resolved_colors[present] = category_colors[codes[present]]
+        return list(resolved_colors), codes, categories, title
+
+    # Palette provided without hue
+    if palette is not None:
+        return _palette_colors(palette, count).tolist(), None, [], None
+
+    # Specific colors are provided
+    if is_color_like(color):
+        return [color] * count, None, [], None
+    try:
+        line_colors = to_rgba_array(color)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "color must be a Matplotlib color or a sequence of colors."
+        ) from exc
+    if len(line_colors) != count:
+        raise ValueError(f"color must contain exactly {count} colors.")
+    return list(line_colors), None, [], None
+
+
 def plot_spectra(
     y: ArrayLike,
     x: ArrayLike | None = None,
     *,
+    hue: ArrayLike | None = None,
     color: ArrayLike | None = None,
-    palette: ArrayLike | Colormap | None = None,
+    palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
+    legend: bool = True,
     ymin: ArrayLike | None = None,
     ymax: ArrayLike | None = None,
     fill_kws: Mapping[str, Any] | None = None,
     ax: Axes | None = None,
     **kwargs: Any,
 ) -> tuple[Figure, Axes]:
-    """Plot each row of a spectral array as a line on one axis.
+    """Plot spectra with optional categorical colors and shaded bands on one axis.
 
     Parameters
     ----------
@@ -36,16 +255,34 @@ def plot_spectra(
         Finite real numeric coordinates, used in the supplied order. Defaults
         to integer positions starting at zero. Descending coordinates do not
         automatically invert the displayed axis.
-    color : Matplotlib color, optional
-        One literal color for all spectra, including RGB/RGBA values. The
-        Matplotlib alias ``c`` is also accepted, but not with ``color``.
-        Cannot be used with ``palette``.
-    palette : str, matplotlib.colors.Colormap, or sequence of colors, optional
-        Colors assigned in spectrum order. A colormap name or object is
-        sampled evenly from 0 to 1. Explicit color sequences are cycled or
-        truncated to match the number of spectra. Bands inherit their line's
-        color. If neither ``color`` nor ``palette`` is supplied, use the axis's
-        color cycle.
+    hue : array-like of shape (n_spectra,), optional
+        Categorical values used to assign colors, one value per spectrum.
+        Category order follows pandas' conversion to categorical (sorted when
+        possible). Existing categorical inputs retain their declared order.
+        Unused categories are removed.
+        Series indices are ignored; values align with spectral rows by position.
+        Missing values are drawn gray and labeled "Missing" in the legend.
+        A named Series supplies the legend title. Spectra are not aggregated.
+    color : Matplotlib color or sequence of colors, optional
+        One literal color for all spectra, including RGB/RGBA values, or a
+        sequence containing exactly one color per spectrum. A numeric RGB/RGBA
+        vector is interpreted as a single color even if its length matches the
+        spectrum count. Use a sequence of RGB/RGBA vectors for individual colors.
+        The Matplotlib alias ``c`` is also accepted, but not with ``color``.
+        Cannot be used with ``palette`` or ``hue``.
+    palette : str, colormap, sequence of colors, or mapping, optional
+        Colors assigned to hue categories, or in spectrum order without hue.
+        A colormap name or object is sampled evenly from 0 to 1. Explicit
+        color sequences are cycled or truncated to match the category or
+        spectrum count. A mapping assigns colors by category and requires hue;
+        it must cover all observed nonmissing categories. Extra keys are allowed.
+        With hue, the default palette is the color cycle in Matplotlib rcParams.
+        With no color, hue, or palette, every spectrum uses Matplotlib C0,
+        the first color in the configured style.
+        Bands inherit their line's color.
+    legend : bool, default=True
+        Add one legend entry per hue category, plus an entry for missing values
+        when present. If False or hue is omitted, existing legends are retained.
     ymin, ymax : array-like of shape (n_spectra, n_coordinates), optional
         Absolute lower and upper bounds of one shaded band per spectrum.
         Supply both or neither. Bounds must be real numeric values, with
@@ -75,10 +312,11 @@ def plot_spectra(
     ------
     ValueError
         If array shapes or finite-value requirements are violated, colors or
-        palettes are invalid, or both ``color`` and ``palette`` are supplied.
+        palettes or hue are invalid, or color is combined with palette or hue.
     TypeError
         If the arrays contain nonnumeric or complex values, or ``ax`` is not
-        a Matplotlib axis, or both ``color`` and ``c`` are supplied.
+        a Matplotlib axis, hue values are unhashable, or both ``color`` and
+        ``c`` are supplied.
 
     Examples
     --------
@@ -94,11 +332,16 @@ def plot_spectra(
     ... )
     >>> plt.close(fig)
 
-    Pass a palette of specific colors. Each band inherits its spectrum's color:
+    Pass one specific color per spectrum. Each band inherits its spectrum's color:
 
     >>> fig, ax = plot_spectra(
-    ...     y, x=x, ymin=y - 1, ymax=y + 2, palette=["tab:blue", "tab:orange"]
+    ...     y, x=x, ymin=y - 1, ymax=y + 2, color=["tab:blue", "tab:orange"]
     ... )
+    >>> plt.close(fig)
+
+    Use a shorter palette to cycle colors across spectra:
+
+    >>> fig, ax = plot_spectra(y, palette=["tab:blue"])
     >>> plt.close(fig)
 
     Use a Matplotlib colormap name as the palette:
@@ -107,72 +350,62 @@ def plot_spectra(
     ...     y, x=x, ymin=y - 1, ymax=y + 2, palette="viridis"
     ... )
     >>> plt.close(fig)
+
+    Map repeated categories to the same color, with one legend entry per category:
+
+    >>> fig, ax = plot_spectra(
+    ...     [[2, 3, 2], [3, 4, 3], [4, 5, 4]], x=x,
+    ...     hue=["A", "A", "B"], palette={"A": "tab:blue", "B": "tab:orange"}
+    ... )
+    >>> plt.close(fig)
+
+    Declare category order with pandas; spectral row order stays unchanged:
+
+    >>> import pandas as pd
+    >>> groups = pd.Categorical(["B", "A"], categories=["A", "B"], ordered=True)
+    >>> fig, ax = plot_spectra(y, hue=groups, palette=["tab:blue", "tab:orange"])
+    >>> plt.close(fig)
     """
     # Validate arrays before creating a figure or modifying a supplied axis.
-    y_array = np.asarray(y)
-    if y_array.ndim != 2:
-        raise ValueError("y must be a 2D array.")
+    y_array = _validate_array(y, "y", ndim=2)
     if y_array.shape[0] == 0:
         raise ValueError("y must contain at least one spectrum.")
     if y_array.shape[1] == 0:
         raise ValueError("y must contain at least one coordinate.")
-    if y_array.dtype.kind not in "iuf":
-        raise TypeError("y must contain real numeric values.")
-    if np.isinf(y_array).any():
-        raise ValueError("y must not contain infinity.")
-
-    x_array = np.arange(y_array.shape[1]) if x is None else np.asarray(x)
-    if x_array.ndim != 1:
-        raise ValueError("x must be a 1D array.")
+    x_array = (
+        np.arange(y_array.shape[1])
+        if x is None
+        else _validate_array(x, "x", ndim=1, na="raise")
+    )
     if len(x_array) != y_array.shape[1]:
         raise ValueError(f"x must have length {y_array.shape[1]}.")
-    if x_array.dtype.kind not in "iuf":
-        raise TypeError("x must contain real numeric values.")
-    if not np.isfinite(x_array).all():
-        raise ValueError("x must contain only finite values.")
 
     # Validate both bounds before adding any artists.
     if (ymin is None) != (ymax is None):
         raise ValueError("ymin and ymax must be supplied together.")
-    bounds = None if ymin is None else (np.asarray(ymin), np.asarray(ymax))
+    bounds = (
+        None
+        if ymin is None
+        else (
+            _validate_array(ymin, "ymin", shape=y_array.shape),
+            _validate_array(ymax, "ymax", shape=y_array.shape),
+        )
+    )
     if bounds is not None:
-        for name, bound in zip(("ymin", "ymax"), bounds):
-            if bound.shape != y_array.shape:
-                raise ValueError(f"{name} must have the same shape as y.")
-            if bound.dtype.kind not in "iuf":
-                raise TypeError(f"{name} must contain real numeric values.")
-            if np.isinf(bound).any():
-                raise ValueError(f"{name} must not contain infinity.")
         if np.any(bounds[0] > bounds[1]):
             raise ValueError("ymin must not exceed ymax.")
     elif fill_kws is not None:
         raise ValueError("fill_kws requires band bounds.")
     fill_options = {} if fill_kws is None else dict(fill_kws)
 
-    # Resolve colors before creating a figure or drawing any lines.
+    # Normalize the Matplotlib alias before resolving all color parameters.
     if "c" in kwargs:
         if color is not None:
             raise TypeError("Use only one of color and c.")
         color = kwargs.pop("c")
-    line_colors = None
-    if color is not None and palette is not None:
-        raise ValueError("color and palette cannot be used together.")
-    if color is not None:
-        if not is_color_like(color):
-            raise ValueError("color must be a single Matplotlib color; use palette.")
-        kwargs["color"] = color
-    elif palette is not None:
-        if isinstance(palette, (str, Colormap)):
-            cmap = plt.get_cmap(palette) if isinstance(palette, str) else palette
-            line_colors = cmap(np.linspace(0, 1, y_array.shape[0]))
-        else:
-            palette_colors = to_rgba_array(palette)
-            if len(palette_colors) == 0:
-                raise ValueError("palette must contain at least one color.")
-            line_colors = palette_colors[
-                np.arange(y_array.shape[0]) % len(palette_colors)
-            ]
-        kwargs["color"] = line_colors[0]
+    line_colors, hue_codes, categories, hue_title = _resolve_color_params(
+        color, hue, palette, count=y_array.shape[0]
+    )
 
     # Validate the target before drawing.
     if ax is not None and not isinstance(ax, Axes):
@@ -185,10 +418,9 @@ def plot_spectra(
         fig = ax.figure
 
     # Matplotlib treats columns as lines, while spectral arrays use rows.
-    lines = ax.plot(x_array, y_array.T, **kwargs)
-    if line_colors is not None:
-        for line, line_color in zip(lines, line_colors):
-            line.set_color(line_color)
+    lines = ax.plot(x_array, y_array.T, color=line_colors[0], **kwargs)
+    for line, line_color in zip(lines, line_colors):
+        line.set_color(line_color)
 
     # Use the resolved line colors without advancing the axis's color cycle.
     if bounds is not None:
@@ -206,4 +438,17 @@ def plot_spectra(
             ):
                 band_options["facecolor"] = line.get_color()
             ax.fill_between(x_array, lower, upper, **band_options)
+
+    # Handle legend
+    # Use actual spectrum lines as legend handles, once per observed category.
+    if hue_codes is not None and legend:
+        first_index_by_code = {}
+        for index, code in enumerate(hue_codes):
+            first_index_by_code.setdefault(code, index)
+        handles = [lines[first_index_by_code[code]] for code in range(len(categories))]
+        labels = [str(category) for category in categories]
+        if -1 in first_index_by_code:
+            handles.append(lines[first_index_by_code[-1]])
+            labels.append("Missing")
+        ax.legend(handles, labels, title=hue_title)
     return fig, ax

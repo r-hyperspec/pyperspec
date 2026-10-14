@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 from matplotlib.axes import Axes
 from matplotlib.colors import to_rgba, to_rgba_array
 
-from pyspc.plotting import plot_spectra
+from pyspc.plotting import _resolve_color_params, _validate_array, plot_spectra
 
 
 @pytest.fixture(autouse=True)
@@ -54,14 +55,24 @@ def test_plot_forwards_line_styles():
         assert line.get_alpha() == 0.4
 
 
-def test_plot_uses_axis_color_cycle_across_calls():
-    _, ax = plt.subplots()
-    ax.set_prop_cycle(color=("red", "blue", "green"))
+@pytest.mark.parametrize("supplied_axis", [False, True])
+def test_plot_uses_one_default_color_for_all_spectra_and_bands(supplied_axis):
+    with plt.rc_context({"axes.prop_cycle": plt.cycler(color=["red", "blue"])}):
+        ax = None
+        if supplied_axis:
+            _, ax = plt.subplots()
+            ax.set_prop_cycle(color=["green", "orange"])
+        _, ax = plot_spectra(
+            [[1, 2], [3, 4]], ymin=[[0, 1], [2, 3]], ymax=[[2, 3], [4, 5]], ax=ax
+        )
+        plot_spectra([[5, 6]], ax=ax)
 
-    plot_spectra([[1, 2], [3, 4]], ax=ax)
-    plot_spectra([[5, 6]], ax=ax)
+        assert [to_rgba(line.get_color()) for line in ax.lines] == [to_rgba("red")] * 3
+        for band in ax.collections:
+            np.testing.assert_allclose(band.get_facecolor(), [to_rgba("red", 0.3)])
 
-    assert [line.get_color() for line in ax.lines] == ["red", "blue", "green"]
+    # Colors remain matched after the temporary style has been restored.
+    assert [to_rgba(line.get_color()) for line in ax.lines] == [to_rgba("red")] * 3
 
 
 def test_plot_draws_into_supplied_axis_without_replacing_existing_lines():
@@ -97,8 +108,8 @@ def test_plot_draws_into_supplied_axis_without_replacing_existing_lines():
         ([[1, 2]], [0], ValueError, "x must have length 2"),
         ([[1, 2]], ["a", "b"], TypeError, "x must contain real numeric values"),
         ([[1, 2]], [0, 1j], TypeError, "x must contain real numeric values"),
-        ([[1, 2]], [0, np.nan], ValueError, "x must contain only finite values"),
-        ([[1, 2]], [0, np.inf], ValueError, "x must contain only finite values"),
+        ([[1, 2]], [0, np.nan], ValueError, "x must not contain NaN"),
+        ([[1, 2]], [0, np.inf], ValueError, "x must not contain infinity"),
     ],
 )
 def test_plot_rejects_invalid_data_before_creating_or_modifying_axes(
@@ -128,17 +139,26 @@ def test_plot_draws_one_band_per_spectrum_with_matching_colors(x):
     ymin = y - 1
     ymax = y + 2
     _, ax = plt.subplots()
-    ax.set_prop_cycle(color=("red", "blue", "green"))
-
     fig, returned_ax = plot_spectra(
-        y, x=x, ymin=ymin, ymax=ymax, ax=ax, alpha=0.8, zorder=0
+        y,
+        x=x,
+        ymin=ymin,
+        ymax=ymax,
+        palette=["red", "blue"],
+        ax=ax,
+        alpha=0.8,
+        zorder=0,
     )
-    plot_spectra([[1, 2, 3]], ax=ax)
+    plot_spectra([[1, 2, 3]], color="green", ax=ax)
 
     assert returned_ax is ax
     assert fig is ax.figure
     assert len(ax.collections) == len(y)
-    assert [line.get_color() for line in ax.lines] == ["red", "blue", "green"]
+    assert [to_rgba(line.get_color()) for line in ax.lines] == [
+        to_rgba("red"),
+        to_rgba("blue"),
+        to_rgba("green"),
+    ]
     assert ax.get_ylim()[0] <= ymin.min()
     assert ax.get_ylim()[1] >= ymax.max()
     coordinates = np.arange(y.shape[1]) if x is None else x
@@ -225,12 +245,35 @@ def test_plot_accepts_palette_colors_with_matching_bands(palette):
 
 
 @pytest.mark.parametrize("color", [(0.2, 0.4, 0.6), [0.2, 0.4, 0.6, 0.8]])
+@pytest.mark.parametrize("count", [3, 4])
 @pytest.mark.parametrize("argument", ["color", "c"])
-def test_plot_treats_rgb_and_rgba_values_as_one_color(color, argument):
-    _, ax = plot_spectra([[1, 2], [3, 4], [5, 6]], **{argument: color})
+def test_plot_treats_rgb_and_rgba_values_as_one_color(color, count, argument):
+    _, ax = plot_spectra(np.ones((count, 2)), **{argument: color})
 
     for line in ax.lines:
         assert to_rgba(line.get_color()) == to_rgba(color)
+
+
+@pytest.mark.parametrize(
+    "colors",
+    [
+        ["black"],
+        ["red", "blue"],
+        [(1, 0, 0), (0, 0, 1)],
+        np.array([[1, 0, 0, 0.5], [0, 0, 1, 0.8]]),
+    ],
+)
+@pytest.mark.parametrize("argument", ["color", "c"])
+def test_plot_accepts_one_specific_color_per_spectrum_with_matching_bands(
+    colors, argument
+):
+    y = np.ones((len(colors), 2))
+
+    _, ax = plot_spectra(y, ymin=y - 1, ymax=y + 1, **{argument: colors})
+
+    for line, band, expected in zip(ax.lines, ax.collections, to_rgba_array(colors)):
+        np.testing.assert_allclose(to_rgba(line.get_color()), expected)
+        np.testing.assert_allclose(band.get_facecolor(), [to_rgba(expected, 0.3)])
 
 
 @pytest.mark.parametrize("palette", ["viridis", plt.get_cmap("viridis")])
@@ -274,7 +317,8 @@ def test_plot_explicit_palette_does_not_advance_axis_color_cycle():
     plot_spectra([[1, 2], [3, 4]], palette=["blue", "orange"], ax=ax)
     plot_spectra([[5, 6]], ax=ax)
 
-    assert ax.lines[-1].get_color() == "red"
+    next_line = ax.plot([0, 1], [7, 8])[0]
+    assert next_line.get_color() == "red"
 
 
 @pytest.mark.parametrize(
@@ -284,6 +328,8 @@ def test_plot_explicit_palette_does_not_advance_axis_color_cycle():
         ({"color": ["red"]}, ValueError),
         ({"color": ["red", "blue", "green"]}, ValueError),
         ({"color": ["red", "invalid"]}, ValueError),
+        ({"color": ["red", "blue"], "hue": ["A", "B"]}, ValueError),
+        ({"color": ["red", "blue"], "palette": "viridis"}, ValueError),
         ({"color": "viridis"}, ValueError),
         ({"color": "red", "c": "blue"}, TypeError),
         ({"palette": []}, ValueError),
@@ -365,12 +411,12 @@ def test_plot_accepts_equal_missing_or_independent_bounds(ymin, ymax):
         (
             {"ymin": [0, 1], "ymax": [[2, 3]]},
             ValueError,
-            "ymin must have the same shape as y",
+            "ymin must have shape",
         ),
         (
             {"ymin": [[0, 1]], "ymax": [[2]]},
             ValueError,
-            "ymax must have the same shape as y",
+            "ymax must have shape",
         ),
         (
             {"ymin": [["a", "b"]], "ymax": [[2, 3]]},
@@ -414,3 +460,214 @@ def test_plot_rejects_invalid_bands_before_creating_or_modifying_axes(
     assert plt.get_fignums() == figures
     assert list(ax.lines) == [existing_line]
     assert len(ax.collections) == 0
+
+
+def test_plot_maps_hue_categories_to_colors_and_bands_without_aggregation():
+    y = np.array([[1, 2], [3, 4], [5, 6]])
+
+    _, ax = plot_spectra(
+        y,
+        hue=["A", "A", "B"],
+        palette={"A": "red", "B": "blue"},
+        ymin=y - 1,
+        ymax=y + 2,
+        linestyle="--",
+    )
+
+    assert len(ax.lines) == len(y)
+    assert len(ax.collections) == len(y)
+    for line, band, spectrum, expected in zip(
+        ax.lines, ax.collections, y, ["red", "red", "blue"]
+    ):
+        np.testing.assert_array_equal(line.get_ydata(), spectrum)
+        assert to_rgba(line.get_color()) == to_rgba(expected)
+        assert line.get_linestyle() == "--"
+        np.testing.assert_allclose(band.get_facecolor(), [to_rgba(expected, 0.3)])
+
+
+def test_plot_palette_dictionary_keeps_colors_consistent_across_calls():
+    palette = {"A": "red", "B": "blue", "unused": "green"}
+
+    _, first = plot_spectra([[1, 2]], hue=["B"], palette=palette)
+    _, second = plot_spectra([[3, 4]], hue=["A"], palette=palette)
+
+    assert to_rgba(first.lines[0].get_color()) == to_rgba("blue")
+    assert to_rgba(second.lines[0].get_color()) == to_rgba("red")
+    assert palette == {"A": "red", "B": "blue", "unused": "green"}
+
+
+@pytest.mark.parametrize("palette", [["red", "blue"], "viridis"])
+def test_plot_uses_pandas_hue_order_with_one_legend_entry_per_category(
+    palette,
+):
+    _, ax = plot_spectra([[1, 2], [3, 4], [5, 6]], hue=["B", "A", "B"], palette=palette)
+
+    expected = (
+        to_rgba_array(palette)
+        if isinstance(palette, list)
+        else plt.get_cmap(palette)([0.0, 1.0])
+    )
+    for line, color in zip(ax.lines, expected[[1, 0, 1]]):
+        np.testing.assert_allclose(to_rgba(line.get_color()), color)
+    legend = ax.get_legend()
+    assert [text.get_text() for text in legend.get_texts()] == ["A", "B"]
+    for handle, color in zip(legend.legend_handles, expected):
+        np.testing.assert_allclose(to_rgba(handle.get_color()), color)
+
+
+@pytest.mark.parametrize("as_series", [False, True])
+def test_plot_preserves_declared_categorical_order_without_unused_categories(
+    as_series,
+):
+    hue = pd.Categorical([10, 20, 10], categories=[20, 10, 30], ordered=True)
+    if as_series:
+        hue = pd.Series(hue, index=[9, 7, 5], name="Treatment")
+
+    _, ax = plot_spectra([[1, 2], [3, 4], [5, 6]], hue=hue, palette=["red", "blue"])
+
+    for line, expected in zip(ax.lines, ["blue", "red", "blue"]):
+        assert to_rgba(line.get_color()) == to_rgba(expected)
+    legend = ax.get_legend()
+    assert [text.get_text() for text in legend.get_texts()] == ["20", "10"]
+    assert legend.get_title().get_text() == ("Treatment" if as_series else "")
+
+
+@pytest.mark.parametrize("hue", [[None, "NA", np.nan, pd.NA], [None] * 4])
+def test_plot_keeps_missing_hue_gray_and_separate_from_literal_na(hue):
+    _, ax = plot_spectra(np.ones((4, 2)), hue=hue, palette={"NA": "red"})
+
+    for line, value in zip(ax.lines, hue):
+        expected = "gray" if pd.isna(value) else "red"
+        assert to_rgba(line.get_color()) == to_rgba(expected)
+    expected_labels = ["Missing"] if all(pd.isna(hue)) else ["NA", "Missing"]
+    assert [text.get_text() for text in ax.get_legend().get_texts()] == expected_labels
+
+
+def test_plot_uses_default_palette_per_hue_category():
+    with plt.rc_context({"axes.prop_cycle": plt.cycler(color=["red", "blue"])}):
+        _, ax = plot_spectra([[1, 2], [3, 4], [5, 6]], hue=["A", "A", "B"])
+
+    assert [to_rgba(line.get_color()) for line in ax.lines] == [
+        to_rgba("red"),
+        to_rgba("red"),
+        to_rgba("blue"),
+    ]
+
+
+def test_plot_can_skip_hue_legend_and_preserve_existing_legend():
+    _, ax = plt.subplots()
+    ax.plot([0, 1], [1, 2], label="Existing")
+    existing = ax.legend()
+
+    plot_spectra([[3, 4]], hue=["A"], legend=False, ax=ax)
+
+    assert ax.get_legend() is existing
+
+
+@pytest.mark.parametrize(
+    "options, error",
+    [
+        ({"hue": "group"}, ValueError),
+        ({"hue": [["A"], ["B"]]}, ValueError),
+        ({"hue": ["A"]}, ValueError),
+        ({"hue": [{"A": 1}, {"B": 2}]}, TypeError),
+        ({"hue": ["A", "B"], "palette": {"A": "red"}}, ValueError),
+        (
+            {"hue": ["A", "B"], "palette": {"A": "red", "B": "invalid"}},
+            ValueError,
+        ),
+        ({"palette": {"A": "red"}}, ValueError),
+        ({"hue": ["A", "B"], "color": "red"}, ValueError),
+        ({"hue": ["A", "B"], "c": "red"}, ValueError),
+    ],
+)
+def test_plot_rejects_invalid_hue_before_creating_or_modifying_axes(options, error):
+    _, ax = plt.subplots()
+    existing_line = ax.plot([0, 1], [10, 20])[0]
+    figures = plt.get_fignums()
+
+    for target in (None, ax):
+        with pytest.raises(error):
+            plot_spectra([[1, 2], [3, 4]], ax=target, **options)
+
+    assert plt.get_fignums() == figures
+    assert list(ax.lines) == [existing_line]
+    assert len(ax.collections) == 0
+
+
+def test_color_resolver_returns_shared_default_color_without_hue_metadata():
+    colors, codes, categories, title = _resolve_color_params(count=3)
+
+    np.testing.assert_allclose(colors, [to_rgba("C0")] * 3)
+    assert codes is None
+    assert categories == []
+    assert title is None
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ({}, ["C0", "C0"]),
+        ({"color": "black"}, ["black", "black"]),
+        ({"color": ["red", "blue"]}, ["red", "blue"]),
+        ({"palette": ["red", "blue"]}, ["red", "blue"]),
+    ],
+)
+def test_color_resolver_accepts_omitted_hue_for_all_color_sources(options, expected):
+    colors, codes, categories, title = _resolve_color_params(
+        hue=None, count=2, **options
+    )
+
+    np.testing.assert_allclose(to_rgba_array(colors), to_rgba_array(expected))
+    assert codes is None
+    assert categories == []
+    assert title is None
+
+
+def test_color_resolver_returns_colors_and_hue_metadata_without_drawing():
+    hue = pd.Series(["B", "A", "B", None], name="Group")
+    figures = plt.get_fignums()
+
+    colors, codes, categories, title = _resolve_color_params(
+        hue=hue, palette={"A": "red", "B": "blue"}, count=4
+    )
+
+    np.testing.assert_allclose(colors, to_rgba_array(["blue", "red", "blue", "gray"]))
+    np.testing.assert_array_equal(codes, [1, 0, 1, -1])
+    assert categories == ["A", "B"]
+    assert title == "Group"
+    assert plt.get_fignums() == figures
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ({}, [1, np.nan]),
+        ({"inf": "ignore"}, [1, np.inf]),
+        ({"na": "raise", "inf": "ignore"}, [1, np.inf]),
+        ({"ndim": 2, "shape": (1, 2)}, [[1, np.nan]]),
+    ],
+)
+def test_validate_array_accepts_requested_shape_and_missing_value_policy(
+    options, expected
+):
+    result = _validate_array(expected, "values", **options)
+
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    "values, options, error",
+    [
+        ([1, 2], {"ndim": 2}, ValueError),
+        ([[1, 2]], {"shape": (2, 2)}, ValueError),
+        ([1, np.nan], {"na": "raise"}, ValueError),
+        ([1, np.nan], {"na": "raise", "inf": "ignore"}, ValueError),
+        ([1, np.inf], {}, ValueError),
+        (["a", "b"], {}, TypeError),
+        ([1j, 2j], {}, TypeError),
+    ],
+)
+def test_validate_array_rejects_invalid_numeric_arrays(values, options, error):
+    with pytest.raises(error, match="values"):
+        _validate_array(values, "values", **options)
