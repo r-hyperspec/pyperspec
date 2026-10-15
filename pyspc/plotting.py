@@ -1,14 +1,16 @@
 """Plot spectral arrays with Matplotlib."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
-from matplotlib.colors import Colormap, is_color_like, to_rgba, to_rgba_array
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Colormap, Normalize, is_color_like, to_rgba, to_rgba_array
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from numpy.typing import ArrayLike
 
 __all__ = ("plot_spectra",)
@@ -112,8 +114,11 @@ def _resolve_color_params(
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
     *,
     count: int,
-) -> tuple[list[ArrayLike], np.ndarray | None, list[Any], str | None]:
-    """Resolve colors and categorical metadata without creating plot artists.
+    color_type: Literal["auto", "discrete"] = "auto",
+) -> tuple[
+    list[ArrayLike], np.ndarray | None, list[Any], str | None, ScalarMappable | None
+]:
+    """Resolve colors and hue metadata without creating plot artists.
 
     Parameters
     ----------
@@ -122,11 +127,13 @@ def _resolve_color_params(
         RGB/RGBA vectors represent one color. Cannot be combined with hue or
         palette.
     hue : array-like of shape (count,), optional
-        Category values used to map palette entries to spectra.
+        Numeric values or categories used to map colors to spectra.
     palette : str, colormap, sequence of colors, or mapping, optional
         Color source for spectra or hue categories. Mappings require hue.
     count : int
         Number of spectra whose colors must be resolved.
+    color_type : {"auto", "discrete"}, default="auto"
+        Map numeric hue continuously unless categorical or explicitly discrete.
 
     Returns
     -------
@@ -134,18 +141,21 @@ def _resolve_color_params(
         One Matplotlib color per spectrum. Defaults to the RGBA value of C0
         from the current style for every spectrum.
     codes : numpy.ndarray or None
-        Per-spectrum category codes, or None without hue.
+        Per-spectrum category codes, or None without discrete hue.
     categories : list
-        Category labels in legend order; empty without hue.
+        Category labels in legend order; empty without discrete hue.
     title : str or None
         Hue Series name, if present.
+    mappable : matplotlib.cm.ScalarMappable or None
+        Shared normalization and colormap for continuous hue. None for discrete
+        hue, absent hue, or numeric hue with no observed values.
 
     Examples
     --------
     Unspecified colors share the first style color. A literal selects another:
 
-    >>> colors, codes, categories, title = _resolve_color_params(count=2)
-    >>> colors, codes, categories, title = _resolve_color_params(
+    >>> colors, codes, categories, title, mappable = _resolve_color_params(count=2)
+    >>> colors, codes, categories, title, mappable = _resolve_color_params(
     ...     color="black", count=2
     ... )
     >>> colors
@@ -154,7 +164,7 @@ def _resolve_color_params(
     Hue codes follow pandas category order, with -1 for missing values:
 
     >>> groups = pd.Series(["B", "A", "B", None], name="Group")
-    >>> colors, codes, categories, title = _resolve_color_params(
+    >>> colors, codes, categories, title, mappable = _resolve_color_params(
     ...     hue=groups, count=4
     ... )
     >>> codes.tolist(), categories, title
@@ -163,13 +173,23 @@ def _resolve_color_params(
     A categorical input preserves its declared order:
 
     >>> groups = pd.Categorical(["B", "A"], categories=["B", "A", "unused"])
-    >>> colors, codes, categories, title = _resolve_color_params(
+    >>> colors, codes, categories, title, mappable = _resolve_color_params(
     ...     hue=groups, count=2
     ... )
     >>> codes.tolist(), categories
     ([0, 1], ['B', 'A'])
+
+    Numeric hue resolves to a continuous scale:
+
+    >>> colors, codes, categories, title, mappable = _resolve_color_params(
+    ...     hue=[10, 11, 20], palette="viridis", count=3
+    ... )
+    >>> mappable.norm([10, 11, 20]).tolist()
+    [0.0, 0.1, 1.0]
     """
     # Reject competing instructions before selecting a color source.
+    if color_type not in ("auto", "discrete"):
+        raise ValueError("color_type must be 'auto' or 'discrete'.")
     if color is not None and palette is not None:
         raise ValueError("color and palette cannot be used together.")
     if color is not None and hue is not None:
@@ -183,15 +203,60 @@ def _resolve_color_params(
 
     # If nothing is provided we just give a single value
     if hue is None and palette is None and color is None:
-        return [to_rgba("C0")] * count, None, [], None
+        return [to_rgba("C0")] * count, None, [], None, None
 
-    # Resolve category colors and keep missing values separate from category labels.
+    # Preserve categorical inputs; infer ordinary numeric values without parsing strings
     if hue is not None:
-        values = pd.Series(hue).reset_index(drop=True).astype("category")
+        values = pd.Series(hue).reset_index(drop=True)
+        title = None if values.name is None else str(values.name)
+        hue_dtype = values.dropna().infer_objects().dtype
+        is_continuous = (
+            color_type == "auto"
+            and not isinstance(values.dtype, pd.CategoricalDtype)
+            and pd.api.types.is_numeric_dtype(hue_dtype)
+            and not pd.api.types.is_bool_dtype(hue_dtype)
+        )
+
+        # Resolve finite numeric hue and its scale before creating any artists.
+        if is_continuous:
+            if pd.api.types.is_complex_dtype(hue_dtype):
+                raise TypeError("hue must contain real numeric values.")
+            if palette is not None and not isinstance(palette, (str, Colormap)):
+                raise ValueError(
+                    "Continuous hue requires a colormap name or object; "
+                    "use color_type='discrete' for color sequences or mappings."
+                )
+            hue_array = _validate_array(
+                values.astype("Float64").to_numpy(dtype=float, na_value=np.nan),
+                "hue",
+                ndim=1,
+            )
+            cmap = plt.get_cmap("viridis" if palette is None else palette)
+            present = ~np.isnan(hue_array)
+            resolved_colors = np.tile(to_rgba("gray"), (count, 1))
+            if not present.any():
+                return list(resolved_colors), None, [], title, None
+            observed = hue_array[present]
+            # Keep constant and nearly constant scales centered and nonsingular.
+            vmin, vmax = float(observed.min()), float(observed.max())
+            tolerance = max(
+                max(abs(vmin), abs(vmax)) * 1e-12, np.finfo(float).tiny * 1e21
+            )
+            if vmax - vmin <= tolerance:
+                padding = max(abs(vmin) * 0.1, abs(vmax) * 0.1, 0.1)
+                vmin, vmax = vmin - padding, vmax + padding
+            if not np.isfinite(vmax - vmin):
+                raise ValueError("hue range is too large for numeric normalization.")
+            mappable = ScalarMappable(norm=Normalize(vmin, vmax), cmap=cmap)
+            mappable.set_array(observed)
+            resolved_colors[present] = mappable.to_rgba(observed)
+            return list(resolved_colors), None, [], title, mappable
+
+        # Resolve discrete codes and keep missing values separate from category labels.
+        values = values.astype("category")
         values = values.cat.remove_unused_categories()
         codes = values.cat.codes.to_numpy()
         categories = values.cat.categories.tolist()
-        title = None if values.name is None else str(values.name)
 
         # From hue values to specific RGB colors
         if palette is None:
@@ -210,15 +275,15 @@ def _resolve_color_params(
         resolved_colors = np.tile(to_rgba("gray"), (count, 1))
         present = codes >= 0
         resolved_colors[present] = category_colors[codes[present]]
-        return list(resolved_colors), codes, categories, title
+        return list(resolved_colors), codes, categories, title, None
 
     # Palette provided without hue
     if palette is not None:
-        return _palette_colors(palette, count).tolist(), None, [], None
+        return _palette_colors(palette, count).tolist(), None, [], None, None
 
     # Specific colors are provided
     if is_color_like(color):
-        return [color] * count, None, [], None
+        return [color] * count, None, [], None, None
     try:
         line_colors = to_rgba_array(color)
     except (TypeError, ValueError) as exc:
@@ -227,7 +292,26 @@ def _resolve_color_params(
         ) from exc
     if len(line_colors) != count:
         raise ValueError(f"color must contain exactly {count} colors.")
-    return list(line_colors), None, [], None
+    return list(line_colors), None, [], None, None
+
+
+def _add_legend(
+    ax: Axes,
+    lines: Sequence[Line2D],
+    codes: np.ndarray,
+    categories: Sequence[Any],
+    title: str | None,
+) -> None:
+    """Add one entry per observed category, followed by missing values if present."""
+    first_index_by_code = {}
+    for index, code in enumerate(codes):
+        first_index_by_code.setdefault(code, index)
+    handles = [lines[first_index_by_code[code]] for code in range(len(categories))]
+    labels = [str(category) for category in categories]
+    if -1 in first_index_by_code:
+        handles.append(lines[first_index_by_code[-1]])
+        labels.append("Missing")
+    ax.legend(handles, labels, title=title)
 
 
 def plot_spectra(
@@ -237,6 +321,7 @@ def plot_spectra(
     hue: ArrayLike | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
+    color_type: Literal["auto", "discrete"] = "auto",
     legend: bool = True,
     ymin: ArrayLike | None = None,
     ymax: ArrayLike | None = None,
@@ -244,7 +329,7 @@ def plot_spectra(
     ax: Axes | None = None,
     **kwargs: Any,
 ) -> tuple[Figure, Axes]:
-    """Plot spectra with optional categorical colors and shaded bands on one axis.
+    """Plot spectra with optional hue colors and shaded bands on one axis.
 
     Parameters
     ----------
@@ -256,13 +341,20 @@ def plot_spectra(
         to integer positions starting at zero. Descending coordinates do not
         automatically invert the displayed axis.
     hue : array-like of shape (n_spectra,), optional
-        Categorical values used to assign colors, one value per spectrum.
-        Category order follows pandas' conversion to categorical (sorted when
+        Values used to assign colors, one value per spectrum. Numeric values
+        use a continuous color scale by default. Booleans and
+        pandas categorical inputs use discrete colors and a legend.
+        Discrete category order follows pandas' conversion (sorted when
         possible). Existing categorical inputs retain their declared order.
         Unused categories are removed.
         Series indices are ignored; values align with spectral rows by position.
-        Missing values are drawn gray and labeled "Missing" in the legend.
-        A named Series supplies the legend title. Spectra are not aggregated.
+        Missing values are drawn gray; discrete legends label them "Missing".
+        Continuous hue must be finite except for missing values. All-missing
+        numeric hue draws gray spectra. Constant numeric hue uses the colormap
+        midpoint. Constant and nearly constant ranges are expanded to keep a
+        stable color scale.
+        Ranges too large for floating-point normalization are rejected.
+        A named Series labels the categorical legend. Spectra are not aggregated.
     color : Matplotlib color or sequence of colors, optional
         One literal color for all spectra, including RGB/RGBA values, or a
         sequence containing exactly one color per spectrum. A numeric RGB/RGBA
@@ -271,18 +363,25 @@ def plot_spectra(
         The Matplotlib alias ``c`` is also accepted, but not with ``color``.
         Cannot be used with ``palette`` or ``hue``.
     palette : str, colormap, sequence of colors, or mapping, optional
-        Colors assigned to hue categories, or in spectrum order without hue.
-        A colormap name or object is sampled evenly from 0 to 1. Explicit
-        color sequences are cycled or truncated to match the category or
-        spectrum count. A mapping assigns colors by category and requires hue;
+        For continuous hue, a colormap name or object, defaulting to "viridis".
+        Values map linearly over the observed numeric range.
+        For discrete hue, colors assigned to categories, or in spectrum order
+        without hue. In these cases, a colormap name or object is sampled
+        evenly from 0 to 1. Explicit color sequences are cycled or truncated
+        to match the category or spectrum count. A mapping assigns colors by
+        category and requires hue;
         it must cover all observed nonmissing categories. Extra keys are allowed.
-        With hue, the default palette is the color cycle in Matplotlib rcParams.
+        With discrete hue, the default palette is Matplotlib's style color cycle.
         With no color, hue, or palette, every spectrum uses Matplotlib C0,
         the first color in the configured style.
         Bands inherit their line's color.
+    color_type : {"auto", "discrete"}, default="auto"
+        Automatic continuous mapping for numeric hue, or discrete mapping for
+        all hue values. Use "discrete" for numeric sample IDs or treatment codes.
     legend : bool, default=True
-        Add one legend entry per hue category, plus an entry for missing values
-        when present. If False or hue is omitted, existing legends are retained.
+        Draw a legend for discrete hue, with one entry per category and a
+        missing-value entry when present. Continuous hue currently draws no
+        colorbar. If False or hue is omitted, existing legends are retained.
     ymin, ymax : array-like of shape (n_spectra, n_coordinates), optional
         Absolute lower and upper bounds of one shaded band per spectrum.
         Supply both or neither. Bounds must be real numeric values, with
@@ -365,6 +464,21 @@ def plot_spectra(
     >>> groups = pd.Categorical(["B", "A"], categories=["A", "B"], ordered=True)
     >>> fig, ax = plot_spectra(y, hue=groups, palette=["tab:blue", "tab:orange"])
     >>> plt.close(fig)
+
+    Map numeric values continuously using a colormap:
+
+    >>> dose = pd.Series([10, 20], name="Dose")
+    >>> fig, ax = plot_spectra(
+    ...     y, hue=dose, palette="plasma", ymin=y - 1, ymax=y + 1
+    ... )
+    >>> plt.close(fig)
+
+    Treat numeric IDs as categories with specific colors and a legend:
+
+    >>> fig, ax = plot_spectra(
+    ...     y, hue=[20, 10], color_type="discrete", palette={10: "red", 20: "blue"}
+    ... )
+    >>> plt.close(fig)
     """
     # Validate arrays before creating a figure or modifying a supplied axis.
     y_array = _validate_array(y, "y", ndim=2)
@@ -403,8 +517,8 @@ def plot_spectra(
         if color is not None:
             raise TypeError("Use only one of color and c.")
         color = kwargs.pop("c")
-    line_colors, hue_codes, categories, hue_title = _resolve_color_params(
-        color, hue, palette, count=y_array.shape[0]
+    line_colors, hue_codes, categories, hue_title, _mappable = _resolve_color_params(
+        color, hue, palette, count=y_array.shape[0], color_type=color_type
     )
 
     # Validate the target before drawing.
@@ -439,16 +553,7 @@ def plot_spectra(
                 band_options["facecolor"] = line.get_color()
             ax.fill_between(x_array, lower, upper, **band_options)
 
-    # Handle legend
-    # Use actual spectrum lines as legend handles, once per observed category.
+    # TODO: Add side colorbars for numeric hue with the multiple-axis layout.
     if hue_codes is not None and legend:
-        first_index_by_code = {}
-        for index, code in enumerate(hue_codes):
-            first_index_by_code.setdefault(code, index)
-        handles = [lines[first_index_by_code[code]] for code in range(len(categories))]
-        labels = [str(category) for category in categories]
-        if -1 in first_index_by_code:
-            handles.append(lines[first_index_by_code[-1]])
-            labels.append("Missing")
-        ax.legend(handles, labels, title=hue_title)
+        _add_legend(ax, lines, hue_codes, categories, hue_title)
     return fig, ax

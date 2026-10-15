@@ -565,6 +565,187 @@ def test_plot_can_skip_hue_legend_and_preserve_existing_legend():
 
 
 @pytest.mark.parametrize(
+    "hue",
+    [
+        [10, 11, 20],
+        np.array([10.0, 11.0, 20.0]),
+        pd.Series([10, 11, 20], index=[9, 7, 5], name="Dose"),
+        pd.Series([10, 11, 20], dtype="Int64", name="Dose"),
+    ],
+)
+@pytest.mark.parametrize("palette", [None, "plasma", plt.get_cmap("plasma")])
+def test_plot_maps_numeric_hue_by_value_with_matching_bands(hue, palette):
+    y = np.array([[1, 2], [3, 4], [5, 6]])
+
+    fig, ax = plot_spectra(y, hue=hue, palette=palette, ymin=y - 1, ymax=y + 1)
+
+    cmap = plt.get_cmap("viridis" if palette is None else palette)
+    expected = cmap([0.0, 0.1, 1.0])
+    assert len(ax.lines) == 3
+    assert ax.get_legend() is None
+    assert fig.axes == [ax]
+    for line, band, color in zip(ax.lines, ax.collections, expected):
+        np.testing.assert_allclose(to_rgba(line.get_color()), color)
+        np.testing.assert_allclose(band.get_facecolor(), [to_rgba(color, 0.3)])
+
+
+@pytest.mark.parametrize(
+    "hue",
+    [
+        [10, None, 20],
+        [10, pd.NA, 20],
+        pd.Series([10, pd.NA, 20], dtype="Float64"),
+    ],
+)
+def test_plot_numeric_hue_keeps_missing_values_gray(hue):
+    fig, ax = plot_spectra(np.ones((3, 2)), hue=hue)
+
+    expected = [
+        plt.get_cmap("viridis")(0.0),
+        to_rgba("gray"),
+        plt.get_cmap("viridis")(1.0),
+    ]
+    np.testing.assert_allclose(
+        [to_rgba(line.get_color()) for line in ax.lines], expected
+    )
+    assert fig.axes == [ax]
+    assert ax.get_legend() is None
+
+
+@pytest.mark.parametrize(
+    "hue", [np.full(3, np.nan), pd.Series([pd.NA] * 3, dtype="Float64")]
+)
+def test_plot_all_missing_numeric_hue_draws_gray_without_colorbar(hue):
+    fig, ax = plot_spectra(np.ones((3, 2)), hue=hue)
+
+    np.testing.assert_allclose(
+        [to_rgba(line.get_color()) for line in ax.lines], [to_rgba("gray")] * 3
+    )
+    assert fig.axes == [ax]
+    assert ax.get_legend() is None
+
+
+@pytest.mark.parametrize("value", [0, -10, 20])
+@pytest.mark.parametrize("count", [1, 2])
+def test_plot_constant_numeric_hue_uses_midpoint(value, count):
+    fig, ax = plot_spectra(np.ones((count, 2)), hue=[value] * count)
+
+    expected = plt.get_cmap("viridis")(0.5)
+    for line in ax.lines:
+        np.testing.assert_allclose(to_rgba(line.get_color()), expected)
+    assert fig.axes == [ax]
+
+
+@pytest.mark.parametrize("hue", [[1.0, 1.0 + 5e-16], [0.0, 1e-320]])
+def test_plot_nearly_constant_numeric_hue_uses_same_scale_with_legend_disabled(hue):
+    fig, ax = plot_spectra(np.ones((2, 2)), hue=hue)
+    hidden_fig, hidden_ax = plot_spectra(np.ones((2, 2)), hue=hue, legend=False)
+    _, _, _, _, mappable = _resolve_color_params(hue=hue, count=2)
+
+    colors = [to_rgba(line.get_color()) for line in ax.lines]
+    np.testing.assert_allclose(colors, mappable.to_rgba(hue))
+    np.testing.assert_allclose(
+        colors, [to_rgba(line.get_color()) for line in hidden_ax.lines]
+    )
+    assert fig.axes == [ax]
+    assert hidden_fig.axes == [hidden_ax]
+
+
+def test_plot_can_treat_numeric_hue_as_discrete_categories():
+    fig, ax = plot_spectra(
+        np.ones((3, 2)),
+        hue=[20, 10, 20],
+        color_type="discrete",
+        palette={10: "red", 20: "blue"},
+    )
+
+    np.testing.assert_allclose(
+        [to_rgba(line.get_color()) for line in ax.lines],
+        to_rgba_array(["blue", "red", "blue"]),
+    )
+    assert [text.get_text() for text in ax.get_legend().get_texts()] == ["10", "20"]
+    assert fig.axes == [ax]
+
+
+@pytest.mark.parametrize("hue", [[True, False, True], ["20", "10", "20"]])
+def test_plot_keeps_boolean_and_numeric_string_hue_discrete(hue):
+    fig, ax = plot_spectra(np.ones((3, 2)), hue=hue)
+
+    assert fig.axes == [ax]
+    assert len(ax.get_legend().get_texts()) == 2
+    assert to_rgba(ax.lines[0].get_color()) == to_rgba(ax.lines[2].get_color())
+
+
+def test_plot_repeated_numeric_values_share_colors_across_a_negative_range():
+    _, ax = plot_spectra(np.ones((4, 2)), hue=[-10, 0, 10, -10])
+
+    np.testing.assert_allclose(
+        [to_rgba(line.get_color()) for line in ax.lines],
+        plt.get_cmap("viridis")([0.0, 0.5, 1.0, 0.0]),
+    )
+
+
+def test_plot_numeric_hue_preserves_supplied_figure_and_other_axes():
+    fig, (ax, other) = plt.subplots(1, 2)
+    other_line = other.plot([0, 1], [10, 20])[0]
+    figures = plt.get_fignums()
+
+    returned_fig, returned_ax = plot_spectra(np.ones((2, 2)), hue=[1, 2], ax=ax)
+
+    assert returned_fig is fig
+    assert returned_ax is ax
+    assert plt.get_fignums() == figures
+    assert fig.axes == [ax, other]
+    assert list(other.lines) == [other_line]
+
+
+@pytest.mark.parametrize("legend", [False, True])
+def test_plot_numeric_hue_preserves_existing_axes_and_legend(legend):
+    fig, (ax, other) = plt.subplots(1, 2)
+    existing_line = ax.plot([0, 1], [1, 2], label="Existing")[0]
+    existing_legend = ax.legend()
+
+    returned_fig, returned_ax = plot_spectra(
+        np.ones((2, 2)), hue=[1, 2], legend=legend, ax=ax
+    )
+
+    assert returned_fig is fig
+    assert returned_ax is ax
+    assert fig.axes == [ax, other]
+    assert ax.lines[0] is existing_line
+    assert ax.get_legend() is existing_legend
+    assert len(other.lines) == 0
+
+
+@pytest.mark.parametrize(
+    "options, error",
+    [
+        ({"hue": [1, np.inf]}, ValueError),
+        ({"hue": [-np.inf, 2]}, ValueError),
+        ({"hue": [1j, 2j]}, TypeError),
+        ({"hue": [np.finfo(float).max] * 2}, ValueError),
+        ({"hue": [-np.finfo(float).max, np.finfo(float).max]}, ValueError),
+        ({"hue": [1, 2], "palette": ["red", "blue"]}, ValueError),
+        ({"hue": [1, 2], "palette": {1: "red", 2: "blue"}}, ValueError),
+        ({"hue": [1, 2], "palette": "invalid"}, ValueError),
+        ({"hue": [1, 2], "color_type": "invalid"}, ValueError),
+    ],
+)
+def test_plot_rejects_invalid_numeric_hue_before_drawing(options, error):
+    fig, ax = plt.subplots()
+    existing = ax.plot([0, 1], [1, 2])[0]
+    figures = plt.get_fignums()
+
+    for target in (None, ax):
+        with pytest.raises(error):
+            plot_spectra(np.ones((2, 2)), ax=target, **options)
+
+    assert plt.get_fignums() == figures
+    assert fig.axes == [ax]
+    assert list(ax.lines) == [existing]
+
+
+@pytest.mark.parametrize(
     "options, error",
     [
         ({"hue": "group"}, ValueError),
@@ -596,12 +777,13 @@ def test_plot_rejects_invalid_hue_before_creating_or_modifying_axes(options, err
 
 
 def test_color_resolver_returns_shared_default_color_without_hue_metadata():
-    colors, codes, categories, title = _resolve_color_params(count=3)
+    colors, codes, categories, title, mappable = _resolve_color_params(count=3)
 
     np.testing.assert_allclose(colors, [to_rgba("C0")] * 3)
     assert codes is None
     assert categories == []
     assert title is None
+    assert mappable is None
 
 
 @pytest.mark.parametrize(
@@ -614,7 +796,7 @@ def test_color_resolver_returns_shared_default_color_without_hue_metadata():
     ],
 )
 def test_color_resolver_accepts_omitted_hue_for_all_color_sources(options, expected):
-    colors, codes, categories, title = _resolve_color_params(
+    colors, codes, categories, title, mappable = _resolve_color_params(
         hue=None, count=2, **options
     )
 
@@ -622,13 +804,14 @@ def test_color_resolver_accepts_omitted_hue_for_all_color_sources(options, expec
     assert codes is None
     assert categories == []
     assert title is None
+    assert mappable is None
 
 
 def test_color_resolver_returns_colors_and_hue_metadata_without_drawing():
     hue = pd.Series(["B", "A", "B", None], name="Group")
     figures = plt.get_fignums()
 
-    colors, codes, categories, title = _resolve_color_params(
+    colors, codes, categories, title, mappable = _resolve_color_params(
         hue=hue, palette={"A": "red", "B": "blue"}, count=4
     )
 
@@ -636,6 +819,23 @@ def test_color_resolver_returns_colors_and_hue_metadata_without_drawing():
     np.testing.assert_array_equal(codes, [1, 0, 1, -1])
     assert categories == ["A", "B"]
     assert title == "Group"
+    assert mappable is None
+    assert plt.get_fignums() == figures
+
+
+def test_color_resolver_returns_numeric_scale_without_drawing():
+    figures = plt.get_fignums()
+    hue = pd.Series([10, 11, 20, np.nan], name="Dose")
+
+    colors, codes, categories, title, mappable = _resolve_color_params(hue=hue, count=4)
+
+    np.testing.assert_allclose(colors[:3], mappable.to_rgba([10, 11, 20]))
+    np.testing.assert_allclose(colors[3], to_rgba("gray"))
+    assert codes is None
+    assert categories == []
+    assert title == "Dose"
+    assert mappable.norm.vmin == 10
+    assert mappable.norm.vmax == 20
     assert plt.get_fignums() == figures
 
 
