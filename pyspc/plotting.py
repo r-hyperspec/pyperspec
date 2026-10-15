@@ -323,6 +323,7 @@ def plot_spectra(
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
     color_type: Literal["auto", "discrete"] = "auto",
     legend: bool = True,
+    symmetric: bool = False,
     ymin: ArrayLike | None = None,
     ymax: ArrayLike | None = None,
     fill_kws: Mapping[str, Any] | None = None,
@@ -382,6 +383,10 @@ def plot_spectra(
         Draw a legend for discrete hue, with one entry per category and a
         missing-value entry when present. Continuous hue currently draws no
         colorbar. If False or hue is omitted, existing legends are retained.
+    symmetric : bool, default=False
+        Make y-axis limits symmetric around zero after plotting. The extent is
+        the largest absolute value of the axis's current limits, including
+        margins, shaded bands, existing artists, or manually configured limits.
     ymin, ymax : array-like of shape (n_spectra, n_coordinates), optional
         Absolute lower and upper bounds of one shaded band per spectrum.
         Supply both or neither. Bounds must be real numeric values, with
@@ -479,6 +484,11 @@ def plot_spectra(
     ...     y, hue=[20, 10], color_type="discrete", palette={10: "red", 20: "blue"}
     ... )
     >>> plt.close(fig)
+
+    Center the y-axis limits on zero while retaining the plotted extent:
+
+    >>> fig, ax = plot_spectra(y, symmetric=True)
+    >>> plt.close(fig)
     """
     # Validate arrays before creating a figure or modifying a supplied axis.
     y_array = _validate_array(y, "y", ndim=2)
@@ -556,4 +566,10 @@ def plot_spectra(
     # TODO: Add side colorbars for numeric hue with the multiple-axis layout.
     if hue_codes is not None and legend:
         _add_legend(ax, lines, hue_codes, categories, hue_title)
+
+    # Use the final axis limits so existing content and margins are included.
+    if symmetric:
+        limit = max(abs(value) for value in ax.get_ylim())
+        ax.set_ylim(-limit, limit)
+
     return fig, ax

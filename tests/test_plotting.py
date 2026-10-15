@@ -43,6 +43,46 @@ def test_plot_preserves_coordinates_and_missing_intensities(x):
     np.testing.assert_array_equal(y, original)
 
 
+@pytest.mark.parametrize(
+    "y", [[[2, 3]], [[-7, -2]], [[-7, 3]], [[0, 0]], [[np.nan, np.nan]]]
+)
+def test_plot_symmetric_limits_use_autoscaled_axis_limits(y):
+    _, reference = plot_spectra(y)
+    limit = max(abs(value) for value in reference.get_ylim())
+
+    _, ax = plot_spectra(y, symmetric=True)
+
+    np.testing.assert_allclose(ax.get_ylim(), [-limit, limit])
+
+
+def test_plot_symmetric_limits_include_bands_existing_artists_and_margins():
+    _, (reference, target) = plt.subplots(1, 2)
+    for ax in (reference, target):
+        ax.plot([0, 1], [15, 40])
+        ax.margins(y=0.2)
+    bounds = {"ymin": [[-30, -20]], "ymax": [[5, 6]]}
+    plot_spectra([[1, 2]], ax=reference, **bounds)
+    original_limits = reference.get_ylim()
+    limit = max(abs(value) for value in original_limits)
+
+    plot_spectra([[1, 2]], ax=target, symmetric=True, **bounds)
+
+    np.testing.assert_allclose(target.get_ylim(), [-limit, limit])
+    np.testing.assert_allclose(reference.get_ylim(), original_limits)
+
+
+@pytest.mark.parametrize("limits", [(-2, 12), (12, -2)])
+@pytest.mark.parametrize("options", [{}, {"symmetric": False}, {"symmetric": True}])
+def test_plot_symmetric_option_uses_manually_set_axis_limits(limits, options):
+    _, ax = plt.subplots()
+    ax.set_ylim(*limits)
+
+    plot_spectra([[100, 200]], ax=ax, **options)
+
+    expected = (-12, 12) if options.get("symmetric", False) else limits
+    np.testing.assert_allclose(ax.get_ylim(), expected)
+
+
 def test_plot_forwards_line_styles():
     _, ax = plot_spectra(
         [[1, 2], [3, 4]], color="red", linewidth=2.5, linestyle="--", alpha=0.4
