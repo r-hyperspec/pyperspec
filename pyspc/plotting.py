@@ -490,6 +490,44 @@ def plot_spectra(
     >>> fig, ax = plot_spectra(y, symmetric=True)
     >>> plt.close(fig)
     """
+    # Delegate drawing to the single-axis implementation.
+    return _single_ax_spectra_plot(
+        y,
+        x=x,
+        hue=hue,
+        color=color,
+        palette=palette,
+        color_type=color_type,
+        legend=legend,
+        symmetric=symmetric,
+        ymin=ymin,
+        ymax=ymax,
+        fill_kws=fill_kws,
+        ax=ax,
+        **kwargs,
+    )
+
+
+def _single_ax_spectra_plot(
+    y: ArrayLike,
+    x: ArrayLike | None = None,
+    *,
+    hue: ArrayLike | None = None,
+    color: ArrayLike | None = None,
+    palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
+    color_type: Literal["auto", "discrete"] = "auto",
+    legend: bool = True,
+    symmetric: bool = False,
+    ymin: ArrayLike | None = None,
+    ymax: ArrayLike | None = None,
+    fill_kws: Mapping[str, Any] | None = None,
+    ax: Axes | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """Draw spectra and optional bands on a supplied or newly created axis.
+
+    Parameters and return values match :func:`plot_spectra`.
+    """
     # Validate arrays before creating a figure or modifying a supplied axis.
     y_array = _validate_array(y, "y", ndim=2)
     if y_array.shape[0] == 0:
