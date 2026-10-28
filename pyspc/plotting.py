@@ -108,6 +108,47 @@ def _validate_array(
     return array
 
 
+def _validate_spectra_arrays(
+    y: ArrayLike,
+    x: ArrayLike | None,
+    ymin: ArrayLike | None,
+    ymax: ArrayLike | None,
+    fill_kws: Mapping[str, Any] | None,
+) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray] | None]:
+    """Validate spectral arrays and band bounds before allocating any axes."""
+    # Validate arrays before creating a figure or modifying a supplied axis.
+    y_array = _validate_array(y, "y", ndim=2)
+    if y_array.shape[0] == 0:
+        raise ValueError("y must contain at least one spectrum.")
+    if y_array.shape[1] == 0:
+        raise ValueError("y must contain at least one coordinate.")
+    x_array = (
+        np.arange(y_array.shape[1])
+        if x is None
+        else _validate_array(x, "x", ndim=1, na="raise")
+    )
+    if len(x_array) != y_array.shape[1]:
+        raise ValueError(f"x must have length {y_array.shape[1]}.")
+
+    # Validate both bounds before adding any artists.
+    if (ymin is None) != (ymax is None):
+        raise ValueError("ymin and ymax must be supplied together.")
+    bounds = (
+        None
+        if ymin is None
+        else (
+            _validate_array(ymin, "ymin", shape=y_array.shape),
+            _validate_array(ymax, "ymax", shape=y_array.shape),
+        )
+    )
+    if bounds is not None:
+        if np.any(bounds[0] > bounds[1]):
+            raise ValueError("ymin must not exceed ymax.")
+    elif fill_kws is not None:
+        raise ValueError("fill_kws requires band bounds.")
+    return y_array, x_array, bounds
+
+
 def _resolve_color_params(
     color: ArrayLike | None = None,
     hue: ArrayLike | None = None,
@@ -296,11 +337,12 @@ def _resolve_color_params(
 
 
 def _add_legend(
-    ax: Axes,
+    target: Axes | Figure,
     lines: Sequence[Line2D],
     codes: np.ndarray,
     categories: Sequence[Any],
     title: str | None,
+    **kwargs: Any,
 ) -> None:
     """Add one entry per observed category, followed by missing values if present."""
     first_index_by_code = {}
@@ -311,13 +353,40 @@ def _add_legend(
     if -1 in first_index_by_code:
         handles.append(lines[first_index_by_code[-1]])
         labels.append("Missing")
-    ax.legend(handles, labels, title=title)
+    target.legend(handles, labels, title=title, **kwargs)
+
+
+def _facet_membership(
+    values: ArrayLike | None, name: str, count: int
+) -> tuple[np.ndarray, list[str]]:
+    """Return positional facet codes and titles, with missing values last."""
+    if values is None:
+        return np.zeros(count, dtype=int), [""]
+    if isinstance(values, (str, bytes)) or np.ndim(values) != 1:
+        raise ValueError(f"{name} must be a 1D vector with one value per spectrum.")
+    if len(values) != count:
+        raise ValueError(f"{name} must have length {count}.")
+
+    # Keep missing codes separate from literal labels such as "Missing".
+    categories = pd.Series(values).astype("category").cat.remove_unused_categories()
+    codes = categories.cat.codes.to_numpy().copy()
+    labels = [str(value) for value in categories.cat.categories]
+    if (codes == -1).any():
+        codes[codes == -1] = len(labels)
+        labels.append("Missing")
+    if categories.name is not None:
+        labels = [f"{categories.name} = {label}" for label in labels]
+    return codes, labels
 
 
 def plot_spectra(
     y: ArrayLike,
     x: ArrayLike | None = None,
     *,
+    row: ArrayLike | None = None,
+    col: ArrayLike | None = None,
+    sharex: bool | Literal["row", "col"] = True,
+    sharey: bool | Literal["row", "col"] = True,
     hue: ArrayLike | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
@@ -329,8 +398,8 @@ def plot_spectra(
     fill_kws: Mapping[str, Any] | None = None,
     ax: Axes | None = None,
     **kwargs: Any,
-) -> tuple[Figure, Axes]:
-    """Plot spectra with optional hue colors and shaded bands on one axis.
+) -> tuple[Figure, Axes | np.ndarray]:
+    """Plot spectra and optional bands on one axis or a row/column facet grid.
 
     Parameters
     ----------
@@ -341,6 +410,18 @@ def plot_spectra(
         Finite real numeric coordinates, used in the supplied order. Defaults
         to integer positions starting at zero. Descending coordinates do not
         automatically invert the displayed axis.
+    row, col : array-like of shape (n_spectra,), optional
+        Membership of each spectrum in the facet rows and columns. Values align
+        by position; Series indices are ignored. Category order follows pandas,
+        preserving declared categorical order and omitting unused levels.
+        Missing membership forms a separate facet labeled "Missing", after the
+        observed categories. All row-column combinations remain visible,
+        including empty panels. Named Series produce titles such as
+        "Treatment = A"; unnamed vectors use the category label alone.
+        Combined titles join the row and column labels with " | ".
+    sharex, sharey : bool or {"row", "col"}, default=True
+        Share coordinate or intensity axes across all facets, within each row,
+        within each column, or not at all. Used only when faceting.
     hue : array-like of shape (n_spectra,), optional
         Values used to assign colors, one value per spectrum. Numeric values
         use a continuous color scale by default. Booleans and
@@ -375,18 +456,25 @@ def plot_spectra(
         With discrete hue, the default palette is Matplotlib's style color cycle.
         With no color, hue, or palette, every spectrum uses Matplotlib C0,
         the first color in the configured style.
-        Bands inherit their line's color.
+        Bands inherit their line's color. Colors are resolved across all spectra
+        before faceting, so hue scales and per-spectrum colors remain consistent
+        across panels.
     color_type : {"auto", "discrete"}, default="auto"
         Automatic continuous mapping for numeric hue, or discrete mapping for
         all hue values. Use "discrete" for numeric sample IDs or treatment codes.
     legend : bool, default=True
         Draw a legend for discrete hue, with one entry per category and a
         missing-value entry when present. Continuous hue currently draws no
-        colorbar. If False or hue is omitted, existing legends are retained.
+        colorbar. Facet grids use one figure legend outside the panels on the
+        right, with space reserved by Matplotlib's constrained layout. Unfaceted
+        calls use an axis legend. If False or hue is omitted, existing legends
+        are retained.
     symmetric : bool, default=False
         Make y-axis limits symmetric around zero after plotting. The extent is
         the largest absolute value of the axis's current limits, including
         margins, shaded bands, existing artists, or manually configured limits.
+        For facets, apply symmetry after all panels are drawn, using the full
+        extent of each shared y-axis group.
     ymin, ymax : array-like of shape (n_spectra, n_coordinates), optional
         Absolute lower and upper bounds of one shaded band per spectrum.
         Supply both or neither. Bounds must be real numeric values, with
@@ -400,7 +488,8 @@ def plot_spectra(
         ``ymin`` and ``ymax``.
     ax : matplotlib.axes.Axes, optional
         Axis to draw into. Existing artists are retained. If omitted, create
-        a figure containing one axis.
+        a figure containing one axis. Cannot be supplied with row or col;
+        facet grids create their own figure and axes.
     **kwargs
         Other line properties passed to ``Axes.plot``, such as ``linewidth``,
         ``linestyle``, and ``alpha``.
@@ -409,14 +498,17 @@ def plot_spectra(
     -------
     fig : matplotlib.figure.Figure
         Figure containing the axis.
-    ax : matplotlib.axes.Axes
-        Created or supplied axis.
+    ax : matplotlib.axes.Axes or numpy.ndarray of Axes
+        Created or supplied axis without facets. With row or col, a 2D array of
+        shape (n_rows, n_columns), including when either dimension is one.
 
     Raises
     ------
     ValueError
         If array shapes or finite-value requirements are violated, colors or
-        palettes or hue are invalid, or color is combined with palette or hue.
+        palettes or hue are invalid, color is combined with palette or hue,
+        facet membership or sharing options are invalid, or ax is supplied with
+        facets.
     TypeError
         If the arrays contain nonnumeric or complex values, or ``ax`` is not
         a Matplotlib axis, hue values are unhashable, or both ``color`` and
@@ -489,23 +581,100 @@ def plot_spectra(
 
     >>> fig, ax = plot_spectra(y, symmetric=True)
     >>> plt.close(fig)
+
+    Split spectra into panels, keeping a consistent hue palette across them:
+
+    >>> treatment = pd.Series(["Control", "Treated"], name="Treatment")
+    >>> fig, axes = plot_spectra(y, col=treatment, hue=["A", "B"])
+    >>> axes.shape
+    (1, 2)
+    >>> plt.close(fig)
     """
-    # Delegate drawing to the single-axis implementation.
-    return _single_ax_spectra_plot(
-        y,
-        x=x,
-        hue=hue,
-        color=color,
-        palette=palette,
-        color_type=color_type,
-        legend=legend,
-        symmetric=symmetric,
-        ymin=ymin,
-        ymax=ymax,
-        fill_kws=fill_kws,
-        ax=ax,
-        **kwargs,
+    if row is None and col is None:
+        return _single_ax_spectra_plot(
+            y,
+            x=x,
+            hue=hue,
+            color=color,
+            palette=palette,
+            color_type=color_type,
+            legend=legend,
+            symmetric=symmetric,
+            ymin=ymin,
+            ymax=ymax,
+            fill_kws=fill_kws,
+            ax=ax,
+            **kwargs,
+        )
+
+    # Validate the full dataset and facet membership before creating a grid.
+    if ax is not None:
+        raise ValueError("ax cannot be supplied with facets.")
+    for name, sharing in (("sharex", sharex), ("sharey", sharey)):
+        if sharing not in (True, False, "row", "col"):
+            raise ValueError(f"{name} must be True, False, 'row', or 'col'.")
+    y_array, x_array, bounds = _validate_spectra_arrays(y, x, ymin, ymax, fill_kws)
+    count = y_array.shape[0]
+    row_codes, row_titles = _facet_membership(row, "row", count)
+    col_codes, col_titles = _facet_membership(col, "col", count)
+
+    # Resolve colors globally so subsets never restart a palette or hue scale.
+    if "c" in kwargs:
+        if color is not None:
+            raise TypeError("Use only one of color and c.")
+        color = kwargs.pop("c")
+    colors, hue_codes, categories, hue_title, _mappable = _resolve_color_params(
+        color, hue, palette, count=count, color_type=color_type
     )
+    colors = to_rgba_array(colors)
+
+    # Retain empty combinations and always return a two-dimensional axes array.
+    fig, axes = plt.subplots(
+        len(row_titles),
+        len(col_titles),
+        squeeze=False,
+        sharex=sharex,
+        sharey=sharey,
+        layout="constrained",
+    )
+    lines_by_index: dict[int, Line2D] = {}
+    for (i, j), facet_ax in np.ndenumerate(axes):
+        facet_ax.set_title(
+            " | ".join(title for title in (row_titles[i], col_titles[j]) if title)
+        )
+        indices = np.flatnonzero((row_codes == i) & (col_codes == j))
+        if not len(indices):
+            continue
+        _single_ax_spectra_plot(
+            y_array[indices],
+            x=x_array,
+            color=colors[indices],
+            ymin=None if bounds is None else bounds[0][indices],
+            ymax=None if bounds is None else bounds[1][indices],
+            fill_kws=fill_kws,
+            ax=facet_ax,
+            **kwargs,
+        )
+        lines_by_index.update(zip(indices, facet_ax.lines))
+
+    # Build a shared legend from actual artists, preserving category order/styles.
+    if hue_codes is not None and legend:
+        _add_legend(
+            fig,
+            [lines_by_index[index] for index in range(count)],
+            hue_codes,
+            categories,
+            hue_title,
+            loc="outside right upper",
+        )
+
+    # Setting limits disables autoscaling, so wait until all panels are drawn.
+    if symmetric:
+        for facet_ax in axes.flat:
+            limit = max(abs(value) for value in facet_ax.get_ylim())
+            facet_ax.set_ylim(-limit, limit)
+
+    return fig, axes
 
 
 def _single_ax_spectra_plot(
@@ -526,38 +695,9 @@ def _single_ax_spectra_plot(
 ) -> tuple[Figure, Axes]:
     """Draw spectra and optional bands on a supplied or newly created axis.
 
-    Parameters and return values match :func:`plot_spectra`.
+    Single-axis parameters and return values match :func:`plot_spectra`.
     """
-    # Validate arrays before creating a figure or modifying a supplied axis.
-    y_array = _validate_array(y, "y", ndim=2)
-    if y_array.shape[0] == 0:
-        raise ValueError("y must contain at least one spectrum.")
-    if y_array.shape[1] == 0:
-        raise ValueError("y must contain at least one coordinate.")
-    x_array = (
-        np.arange(y_array.shape[1])
-        if x is None
-        else _validate_array(x, "x", ndim=1, na="raise")
-    )
-    if len(x_array) != y_array.shape[1]:
-        raise ValueError(f"x must have length {y_array.shape[1]}.")
-
-    # Validate both bounds before adding any artists.
-    if (ymin is None) != (ymax is None):
-        raise ValueError("ymin and ymax must be supplied together.")
-    bounds = (
-        None
-        if ymin is None
-        else (
-            _validate_array(ymin, "ymin", shape=y_array.shape),
-            _validate_array(ymax, "ymax", shape=y_array.shape),
-        )
-    )
-    if bounds is not None:
-        if np.any(bounds[0] > bounds[1]):
-            raise ValueError("ymin must not exceed ymax.")
-    elif fill_kws is not None:
-        raise ValueError("fill_kws requires band bounds.")
+    y_array, x_array, bounds = _validate_spectra_arrays(y, x, ymin, ymax, fill_kws)
     fill_options = {} if fill_kws is None else dict(fill_kws)
 
     # Normalize the Matplotlib alias before resolving all color parameters.
@@ -601,7 +741,7 @@ def _single_ax_spectra_plot(
                 band_options["facecolor"] = line.get_color()
             ax.fill_between(x_array, lower, upper, **band_options)
 
-    # TODO: Add side colorbars for numeric hue with the multiple-axis layout.
+    # TODO: Add side colorbars for numeric hue.
     if hue_codes is not None and legend:
         _add_legend(ax, lines, hue_codes, categories, hue_title)
 
