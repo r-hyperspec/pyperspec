@@ -1,4 +1,4 @@
-"""Public behavior of rectangular spectral facets."""
+"""Public behavior of spectral facet grids."""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -100,7 +100,8 @@ def test_one_level_facets_return_a_two_dimensional_axes_array(argument):
     assert axes[0, 0].get_title() == "A"
 
 
-def test_facets_slice_bands_and_forward_styles_without_mutating_inputs():
+@pytest.mark.parametrize("col_wrap", [None, 1])
+def test_facets_slice_bands_and_forward_styles_without_mutating_inputs(col_wrap):
     y = np.array([[2, 4, np.nan], [5, 6, 4], [8, 9, 7]])
     lower, upper = y - 2, y + 3
     original = y.copy()
@@ -111,6 +112,7 @@ def test_facets_slice_bands_and_forward_styles_without_mutating_inputs():
         y,
         x=x,
         col=["B", "A", "B"],
+        col_wrap=col_wrap,
         ymin=lower,
         ymax=upper,
         color=["red", "blue", "green"],
@@ -158,10 +160,13 @@ def test_facets_slice_bands_and_forward_styles_without_mutating_inputs():
         ({"palette": "viridis"}, plt.get_cmap("viridis")(np.linspace(0, 1, 4))),
     ],
 )
+@pytest.mark.parametrize("col_wrap", [None, 1])
 def test_facets_resolve_literal_colors_and_palettes_in_global_spectrum_order(
-    options, expected
+    options, expected, col_wrap
 ):
-    fig, axes = plot_spectra(np.ones((4, 2)), col=["B", "A", "B", "A"], **options)
+    fig, axes = plot_spectra(
+        np.ones((4, 2)), col=["B", "A", "B", "A"], col_wrap=col_wrap, **options
+    )
 
     for ax, indices in zip(axes.flat, [[1, 3], [0, 2]]):
         np.testing.assert_allclose(
@@ -171,7 +176,8 @@ def test_facets_resolve_literal_colors_and_palettes_in_global_spectrum_order(
 
 
 @pytest.mark.parametrize("legend", [False, True])
-def test_facets_use_global_hue_colors_and_one_outside_legend(legend):
+@pytest.mark.parametrize("col_wrap", [None, 2])
+def test_facets_use_global_hue_colors_and_one_outside_legend(legend, col_wrap):
     y = np.arange(10).reshape(5, 2)
     hue = pd.Series(
         pd.Categorical(
@@ -184,6 +190,7 @@ def test_facets_use_global_hue_colors_and_one_outside_legend(legend):
     fig, axes = plot_spectra(
         y,
         col=["right", "left", "left", None, "right"],
+        col_wrap=col_wrap,
         hue=hue,
         palette=palette,
         legend=legend,
@@ -233,8 +240,11 @@ def test_facets_use_global_hue_colors_and_one_outside_legend(legend):
 
 
 @pytest.mark.parametrize("hue", [[None, None], [10, 20], [10, None]])
-def test_facets_use_global_continuous_hue_scale_or_all_missing_legend(hue):
-    fig, axes = plot_spectra([[1, 2], [3, 4]], col=["A", "B"], hue=hue)
+@pytest.mark.parametrize("col_wrap", [None, 1])
+def test_facets_use_global_continuous_hue_scale_or_all_missing_legend(hue, col_wrap):
+    fig, axes = plot_spectra(
+        [[1, 2], [3, 4]], col=["A", "B"], col_wrap=col_wrap, hue=hue
+    )
     _, reference = plot_spectra([[1, 2], [3, 4]], hue=hue)
 
     np.testing.assert_allclose(
@@ -337,6 +347,175 @@ def test_facets_reject_supplied_axis_without_modifying_it():
 
     with pytest.raises(ValueError, match="ax.*facet"):
         plot_spectra([[1, 2], [3, 4]], row=["A", "B"], ax=ax)
+
+    assert plt.get_fignums() == figures
+    assert fig.axes == [ax]
+    assert list(ax.lines) == [existing]
+
+
+@pytest.mark.parametrize("col_wrap", [1, 2, 3, 4, 5, 7, np.int64(2)])
+def test_wrapped_facets_fill_in_order_and_hide_spare_axes(col_wrap):
+    y = np.arange(18).reshape(6, 3)
+    col = pd.Series(
+        ["E", "B", "C", "A", "D", "B"], index=[6, 5, 4, 3, 2, 1], name="Group"
+    )
+
+    fig, axes = plot_spectra(y, col=col, col_wrap=col_wrap)
+
+    assert axes.shape == ((5 + col_wrap - 1) // col_wrap, col_wrap)
+    assert fig.axes == list(axes.flat)
+    for ax, title, indices in zip(axes.flat, "ABCDE", [[3], [1, 5], [2], [4], [0]]):
+        assert ax.get_visible()
+        assert ax.get_title() == f"Group = {title}"
+        assert len(ax.lines) == len(indices)
+        for line, index in zip(ax.lines, indices):
+            np.testing.assert_array_equal(line.get_ydata(), y[index])
+    for ax in list(axes.flat)[5:]:
+        assert not ax.get_visible()
+        assert not ax.lines
+        assert not ax.collections
+        assert ax.get_title() == ""
+
+
+@pytest.mark.parametrize("as_series", [False, True])
+def test_wrapped_facets_preserve_categorical_order_and_missing_membership(as_series):
+    col = pd.Categorical(
+        ["A", None, "B", "Missing"], categories=["B", "unused", "Missing", "A"]
+    )
+    if as_series:
+        col = pd.Series(col, name="Group")
+
+    _, axes = plot_spectra(np.arange(8).reshape(4, 2), col=col, col_wrap=3)
+
+    assert axes.shape == (2, 3)
+    prefix = "Group = " if as_series else ""
+    assert [ax.get_title() for ax in list(axes.flat)[:4]] == [
+        prefix + label for label in ["B", "Missing", "A", "Missing"]
+    ]
+    for ax, index in zip(axes.flat, [2, 3, 0, 1]):
+        np.testing.assert_array_equal(
+            ax.lines[0].get_ydata(), [index * 2, index * 2 + 1]
+        )
+    assert [ax.get_visible() for ax in axes.flat] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_wrapped_facets_keep_all_missing_membership_in_one_visible_panel():
+    _, axes = plot_spectra([[1, 2], [3, 4]], col=[None, pd.NA], col_wrap=2)
+
+    assert axes.shape == (1, 2)
+    assert axes[0, 0].get_title() == "Missing"
+    assert len(axes[0, 0].lines) == 2
+    assert not axes[0, 1].get_visible()
+
+
+@pytest.mark.parametrize("sharex", [True, False, "row", "col"])
+@pytest.mark.parametrize("sharey", [True, False, "row", "col"])
+def test_wrapped_facets_share_axes_by_physical_grid_positions(sharex, sharey):
+    _, axes = plot_spectra(
+        np.arange(10).reshape(5, 2),
+        col=list("ABCDE"),
+        col_wrap=2,
+        sharex=sharex,
+        sharey=sharey,
+    )
+    visible = [
+        (position, ax) for position, ax in np.ndenumerate(axes) if ax.get_visible()
+    ]
+
+    for coordinate, sharing in [("x", sharex), ("y", sharey)]:
+        for (r1, c1), first in visible:
+            for (r2, c2), second in visible:
+                if first is second:
+                    continue
+                expected = (
+                    sharing is True
+                    or (sharing == "row" and r1 == r2)
+                    or (sharing == "col" and c1 == c2)
+                )
+                group = getattr(first, f"get_shared_{coordinate}_axes")()
+                assert group.joined(first, second) == expected
+
+
+@pytest.mark.parametrize("sharex", [True, False, "row", "col"])
+def test_wrapped_facets_keep_tick_labels_at_visible_bottom_edges(sharex):
+    fig, axes = plot_spectra(
+        np.arange(6).reshape(3, 2), col=list("ABC"), col_wrap=2, sharex=sharex
+    )
+    fig.canvas.draw()
+
+    for position in [(0, 1), (1, 0)]:
+        labels = axes[position].get_xticklabels()
+        assert labels
+        assert all(label.get_visible() for label in labels)
+    assert bool(axes[0, 0].get_xticklabels()) == (sharex is False or sharex == "row")
+    assert not axes[1, 1].get_visible()
+
+
+@pytest.mark.parametrize("sharey", [True, False, "row", "col"])
+def test_wrapped_facets_apply_symmetry_after_all_shared_data_and_bands_are_drawn(
+    sharey,
+):
+    y = np.array([[1, 2], [10, 20], [-300, -200], [1000, 2000], [400, 500]])
+    options = {
+        "col": list("ABCDE"),
+        "col_wrap": 2,
+        "sharey": sharey,
+        "ymin": y - 5,
+        "ymax": y + 50,
+    }
+    _, reference = plot_spectra(y, **options)
+    _, axes = plot_spectra(y, symmetric=True, **options)
+
+    for ax, other in zip(axes.flat, reference.flat):
+        if not ax.get_visible():
+            continue
+        limit = max(abs(value) for value in other.get_ylim())
+        np.testing.assert_allclose(ax.get_ylim(), [-limit, limit])
+
+
+@pytest.mark.parametrize(
+    "col_wrap", [0, -1, 1.5, 2.0, "2", True, False, np.bool_(True), [2]]
+)
+def test_wrapped_facets_reject_invalid_width_without_creating_figures(col_wrap):
+    figures = plt.get_fignums()
+
+    with pytest.raises(ValueError, match="col_wrap.*positive integer"):
+        plot_spectra([[1, 2], [3, 4]], col=["A", "B"], col_wrap=col_wrap)
+
+    assert plt.get_fignums() == figures
+
+
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({}, "col_wrap.*col"),
+        ({"row": ["A", "B"]}, "col_wrap.*row"),
+        ({"row": ["A", "B"], "col": ["X", "Y"]}, "col_wrap.*row"),
+    ],
+)
+def test_wrapped_facets_require_col_without_row(options, message):
+    figures = plt.get_fignums()
+
+    with pytest.raises(ValueError, match=message):
+        plot_spectra([[1, 2], [3, 4]], col_wrap=2, **options)
+
+    assert plt.get_fignums() == figures
+
+
+def test_wrapped_facets_reject_supplied_axis_without_modifying_it():
+    fig, ax = plt.subplots()
+    existing = ax.plot([0, 1], [1, 2])[0]
+    figures = plt.get_fignums()
+
+    with pytest.raises(ValueError, match="ax.*facet"):
+        plot_spectra([[1, 2], [3, 4]], col=["A", "B"], col_wrap=1, ax=ax)
 
     assert plt.get_fignums() == figures
     assert fig.axes == [ax]

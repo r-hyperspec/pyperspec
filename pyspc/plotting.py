@@ -1,6 +1,7 @@
 """Plot spectral arrays with Matplotlib."""
 
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 from typing import Any, Literal
 
 import matplotlib.pyplot as plt
@@ -385,6 +386,7 @@ def plot_spectra(
     *,
     row: ArrayLike | None = None,
     col: ArrayLike | None = None,
+    col_wrap: int | None = None,
     sharex: bool | Literal["row", "col"] = True,
     sharey: bool | Literal["row", "col"] = True,
     hue: ArrayLike | None = None,
@@ -419,9 +421,16 @@ def plot_spectra(
         including empty panels. Named Series produce titles such as
         "Treatment = A"; unnamed vectors use the category label alone.
         Combined titles join the row and column labels with " | ".
+    col_wrap : positive int, optional
+        Wrap column facets at this width, filling panels from left to right,
+        then top to bottom. Requires col and cannot be combined with row.
+        The grid retains the requested width even when there are fewer facets;
+        unused axes in the last row are hidden. Category order and missing
+        membership follow col as usual.
     sharex, sharey : bool or {"row", "col"}, default=True
         Share coordinate or intensity axes across all facets, within each row,
-        within each column, or not at all. Used only when faceting.
+        within each column, or not at all. Used only when faceting. With
+        col_wrap, rows and columns refer to physical positions in the grid.
     hue : array-like of shape (n_spectra,), optional
         Values used to assign colors, one value per spectrum. Numeric values
         use a continuous color scale by default. Booleans and
@@ -501,6 +510,7 @@ def plot_spectra(
     ax : matplotlib.axes.Axes or numpy.ndarray of Axes
         Created or supplied axis without facets. With row or col, a 2D array of
         shape (n_rows, n_columns), including when either dimension is one.
+        Wrapped grids include hidden axes for unused positions in the last row.
 
     Raises
     ------
@@ -508,7 +518,8 @@ def plot_spectra(
         If array shapes or finite-value requirements are violated, colors or
         palettes or hue are invalid, color is combined with palette or hue,
         facet membership or sharing options are invalid, or ax is supplied with
-        facets.
+        facets, or col_wrap is not a positive integer or is used without col
+        or with row.
     TypeError
         If the arrays contain nonnumeric or complex values, or ``ax`` is not
         a Matplotlib axis, hue values are unhashable, or both ``color`` and
@@ -589,7 +600,28 @@ def plot_spectra(
     >>> axes.shape
     (1, 2)
     >>> plt.close(fig)
+
+    Wrap column facets into multiple rows:
+
+    >>> fig, axes = plot_spectra(y, col=treatment, col_wrap=1)
+    >>> axes.shape
+    (2, 1)
+    >>> plt.close(fig)
     """
+    # Validate wrapping even when no facet membership has been supplied.
+    if col_wrap is not None:
+        if (
+            isinstance(col_wrap, bool)
+            or not isinstance(col_wrap, Integral)
+            or col_wrap < 1
+        ):
+            raise ValueError("col_wrap must be a positive integer.")
+        if row is not None:
+            raise ValueError("col_wrap cannot be combined with row.")
+        if col is None:
+            raise ValueError("col_wrap requires col.")
+        col_wrap = int(col_wrap)
+
     if row is None and col is None:
         return _single_ax_spectra_plot(
             y,
@@ -628,10 +660,14 @@ def plot_spectra(
     )
     colors = to_rgba_array(colors)
 
-    # Retain empty combinations and always return a two-dimensional axes array.
+    # Retain empty combinations and wrap columns into physical rows when needed.
+    ncols = len(col_titles) if col_wrap is None else col_wrap
+    nrows = (
+        len(row_titles) if col_wrap is None else (len(col_titles) + ncols - 1) // ncols
+    )
     fig, axes = plt.subplots(
-        len(row_titles),
-        len(col_titles),
+        nrows,
+        ncols,
         squeeze=False,
         sharex=sharex,
         sharey=sharey,
@@ -639,10 +675,19 @@ def plot_spectra(
     )
     lines_by_index: dict[int, Line2D] = {}
     for (i, j), facet_ax in np.ndenumerate(axes):
+        # Map grid positions back to membership before slicing spectral rows.
+        facet_row, facet_col = (i, j) if col_wrap is None else (0, i * ncols + j)
+        if facet_col >= len(col_titles):
+            facet_ax.set_visible(False)
+            continue
         facet_ax.set_title(
-            " | ".join(title for title in (row_titles[i], col_titles[j]) if title)
+            " | ".join(
+                title
+                for title in (row_titles[facet_row], col_titles[facet_col])
+                if title
+            )
         )
-        indices = np.flatnonzero((row_codes == i) & (col_codes == j))
+        indices = np.flatnonzero((row_codes == facet_row) & (col_codes == facet_col))
         if not len(indices):
             continue
         _single_ax_spectra_plot(
@@ -656,6 +701,12 @@ def plot_spectra(
             **kwargs,
         )
         lines_by_index.update(zip(indices, facet_ax.lines))
+
+    # A hidden final panel must not suppress the tick labels directly above it.
+    if col_wrap is not None and sharex in (True, "col"):
+        for j in range(min(ncols, len(col_titles))):
+            bottom_row = (len(col_titles) - 1 - j) // ncols
+            axes[bottom_row, j].tick_params(axis="x", labelbottom=True)
 
     # Build a shared legend from actual artists, preserving category order/styles.
     if hue_codes is not None and legend:
@@ -671,6 +722,8 @@ def plot_spectra(
     # Setting limits disables autoscaling, so wait until all panels are drawn.
     if symmetric:
         for facet_ax in axes.flat:
+            if not facet_ax.get_visible():
+                continue
             limit = max(abs(value) for value in facet_ax.get_ylim())
             facet_ax.set_ylim(-limit, limit)
 
