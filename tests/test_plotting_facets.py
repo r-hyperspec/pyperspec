@@ -251,7 +251,9 @@ def test_facets_use_global_continuous_hue_scale_or_all_missing_legend(hue, col_w
         [to_rgba(ax.lines[0].get_color()) for ax in axes.flat],
         [to_rgba(line.get_color()) for line in reference.lines],
     )
-    assert fig.axes == list(axes.flat)
+    has_colorbar = hue != [None, None]
+    assert fig.axes[: axes.size] == list(axes.flat)
+    assert len(fig.axes) == axes.size + int(has_colorbar)
     assert len(fig.legends) == int(hue == [None, None])
 
 

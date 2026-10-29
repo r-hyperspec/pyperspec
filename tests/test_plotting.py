@@ -623,7 +623,7 @@ def test_plot_maps_numeric_hue_by_value_with_matching_bands(hue, palette):
     expected = cmap([0.0, 0.1, 1.0])
     assert len(ax.lines) == 3
     assert ax.get_legend() is None
-    assert fig.axes == [ax]
+    assert fig.axes[:-1] == [ax]
     for line, band, color in zip(ax.lines, ax.collections, expected):
         np.testing.assert_allclose(to_rgba(line.get_color()), color)
         np.testing.assert_allclose(band.get_facecolor(), [to_rgba(color, 0.3)])
@@ -648,7 +648,7 @@ def test_plot_numeric_hue_keeps_missing_values_gray(hue):
     np.testing.assert_allclose(
         [to_rgba(line.get_color()) for line in ax.lines], expected
     )
-    assert fig.axes == [ax]
+    assert fig.axes[:-1] == [ax]
     assert ax.get_legend() is None
 
 
@@ -673,7 +673,11 @@ def test_plot_constant_numeric_hue_uses_midpoint(value, count):
     expected = plt.get_cmap("viridis")(0.5)
     for line in ax.lines:
         np.testing.assert_allclose(to_rgba(line.get_color()), expected)
-    assert fig.axes == [ax]
+    assert fig.axes[:-1] == [ax]
+    padding = max(abs(value) * 0.1, 0.1)
+    np.testing.assert_allclose(
+        fig.axes[-1].get_ylim(), [value - padding, value + padding]
+    )
 
 
 @pytest.mark.parametrize("hue", [[1.0, 1.0 + 5e-16], [0.0, 1e-320]])
@@ -687,8 +691,11 @@ def test_plot_nearly_constant_numeric_hue_uses_same_scale_with_legend_disabled(h
     np.testing.assert_allclose(
         colors, [to_rgba(line.get_color()) for line in hidden_ax.lines]
     )
-    assert fig.axes == [ax]
+    assert fig.axes[:-1] == [ax]
     assert hidden_fig.axes == [hidden_ax]
+    np.testing.assert_allclose(
+        fig.axes[-1].get_ylim(), [mappable.norm.vmin, mappable.norm.vmax]
+    )
 
 
 def test_plot_can_treat_numeric_hue_as_discrete_categories():
@@ -735,7 +742,7 @@ def test_plot_numeric_hue_preserves_supplied_figure_and_other_axes():
     assert returned_fig is fig
     assert returned_ax is ax
     assert plt.get_fignums() == figures
-    assert fig.axes == [ax, other]
+    assert fig.axes[:-1] == [ax, other]
     assert list(other.lines) == [other_line]
 
 
@@ -751,7 +758,8 @@ def test_plot_numeric_hue_preserves_existing_axes_and_legend(legend):
 
     assert returned_fig is fig
     assert returned_ax is ax
-    assert fig.axes == [ax, other]
+    assert fig.axes[:2] == [ax, other]
+    assert len(fig.axes) == 2 + int(legend)
     assert ax.lines[0] is existing_line
     assert ax.get_legend() is existing_legend
     assert len(other.lines) == 0

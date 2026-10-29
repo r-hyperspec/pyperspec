@@ -445,7 +445,7 @@ def plot_spectra(
         midpoint. Constant and nearly constant ranges are expanded to keep a
         stable color scale.
         Ranges too large for floating-point normalization are rejected.
-        A named Series labels the categorical legend. Spectra are not aggregated.
+        A named Series labels the legend or colorbar. Spectra are not aggregated.
     color : Matplotlib color or sequence of colors, optional
         One literal color for all spectra, including RGB/RGBA values, or a
         sequence containing exactly one color per spectrum. A numeric RGB/RGBA
@@ -472,12 +472,16 @@ def plot_spectra(
         Automatic continuous mapping for numeric hue, or discrete mapping for
         all hue values. Use "discrete" for numeric sample IDs or treatment codes.
     legend : bool, default=True
-        Draw a legend for discrete hue, with one entry per category and a
-        missing-value entry when present. Continuous hue currently draws no
-        colorbar. Facet grids use one figure legend outside the panels on the
-        right, with space reserved by Matplotlib's constrained layout. Unfaceted
-        calls use an axis legend. If False or hue is omitted, existing legends
-        are retained.
+        Draw a hue guide: a legend for discrete hue, or a vertical colorbar on
+        the right for continuous hue. Discrete legends contain one entry per
+        category and a missing-value entry when present. Continuous colorbars
+        use the same global scale as the spectra and bands; missing hue stays
+        gray and all-missing numeric hue produces no colorbar. A named hue
+        Series labels the guide. Facet grids have one shared guide outside the
+        panels, with space reserved by Matplotlib's constrained layout.
+        Unfaceted calls use an axis legend or a colorbar beside the created or
+        supplied axis. If False or hue is omitted, no guide is added; existing
+        legends and colorbars are retained.
     symmetric : bool, default=False
         Make y-axis limits symmetric around zero after plotting. The extent is
         the largest absolute value of the axis's current limits, including
@@ -506,11 +510,12 @@ def plot_spectra(
     Returns
     -------
     fig : matplotlib.figure.Figure
-        Figure containing the axis.
+        Figure containing the spectral axes and any colorbar axis.
     ax : matplotlib.axes.Axes or numpy.ndarray of Axes
         Created or supplied axis without facets. With row or col, a 2D array of
         shape (n_rows, n_columns), including when either dimension is one.
         Wrapped grids include hidden axes for unused positions in the last row.
+        The colorbar axis is not included in this return value.
 
     Raises
     ------
@@ -655,7 +660,7 @@ def plot_spectra(
         if color is not None:
             raise TypeError("Use only one of color and c.")
         color = kwargs.pop("c")
-    colors, hue_codes, categories, hue_title, _mappable = _resolve_color_params(
+    colors, hue_codes, categories, hue_title, mappable = _resolve_color_params(
         color, hue, palette, count=count, color_type=color_type
     )
     colors = to_rgba_array(colors)
@@ -708,7 +713,7 @@ def plot_spectra(
             bottom_row = (len(col_titles) - 1 - j) // ncols
             axes[bottom_row, j].tick_params(axis="x", labelbottom=True)
 
-    # Build a shared legend from actual artists, preserving category order/styles.
+    # Draw one shared hue guide using the globally resolved colors and scale.
     if hue_codes is not None and legend:
         _add_legend(
             fig,
@@ -717,6 +722,13 @@ def plot_spectra(
             categories,
             hue_title,
             loc="outside right upper",
+        )
+    elif mappable is not None and legend:
+        fig.colorbar(
+            mappable,
+            ax=[facet_ax for facet_ax in axes.flat if facet_ax.get_visible()],
+            location="right",
+            label=hue_title or "",
         )
 
     # Setting limits disables autoscaling, so wait until all panels are drawn.
@@ -758,7 +770,7 @@ def _single_ax_spectra_plot(
         if color is not None:
             raise TypeError("Use only one of color and c.")
         color = kwargs.pop("c")
-    line_colors, hue_codes, categories, hue_title, _mappable = _resolve_color_params(
+    line_colors, hue_codes, categories, hue_title, mappable = _resolve_color_params(
         color, hue, palette, count=y_array.shape[0], color_type=color_type
     )
 
@@ -794,9 +806,11 @@ def _single_ax_spectra_plot(
                 band_options["facecolor"] = line.get_color()
             ax.fill_between(x_array, lower, upper, **band_options)
 
-    # TODO: Add side colorbars for numeric hue.
+    # Use the same hue guide behavior for created and supplied axes.
     if hue_codes is not None and legend:
         _add_legend(ax, lines, hue_codes, categories, hue_title)
+    elif mappable is not None and legend:
+        fig.colorbar(mappable, ax=ax, location="right", label=hue_title or "")
 
     # Use the final axis limits so existing content and margins are included.
     if symmetric:
