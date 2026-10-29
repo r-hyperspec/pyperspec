@@ -1,6 +1,7 @@
 """Plot spectral arrays with Matplotlib."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from numbers import Integral
 from typing import Any, Literal
 
@@ -359,10 +360,10 @@ def _add_legend(
 
 def _facet_membership(
     values: ArrayLike | None, name: str, count: int
-) -> tuple[np.ndarray, list[str]]:
-    """Return positional facet codes and titles, with missing values last."""
+) -> tuple[np.ndarray, list[Any], str | None]:
+    """Return facet codes, raw category values, and the optional Series name."""
     if values is None:
-        return np.zeros(count, dtype=int), [""]
+        return np.zeros(count, dtype=int), [None], None
     if isinstance(values, (str, bytes)) or np.ndim(values) != 1:
         raise ValueError(f"{name} must be a 1D vector with one value per spectrum.")
     if len(values) != count:
@@ -371,13 +372,50 @@ def _facet_membership(
     # Keep missing codes separate from literal labels such as "Missing".
     categories = pd.Series(values).astype("category").cat.remove_unused_categories()
     codes = categories.cat.codes.to_numpy().copy()
-    labels = [str(value) for value in categories.cat.categories]
+    category_values = categories.cat.categories.tolist()
     if (codes == -1).any():
-        codes[codes == -1] = len(labels)
-        labels.append("Missing")
-    if categories.name is not None:
-        labels = [f"{categories.name} = {label}" for label in labels]
-    return codes, labels
+        codes[codes == -1] = len(category_values)
+        category_values.append(pd.NA)
+    series_name = None if categories.name is None else str(categories.name)
+    return codes, category_values, series_name
+
+
+def _default_title_formatter(
+    row_value: Any | None,
+    col_value: Any | None,
+    *,
+    row_name: str | None = None,
+    col_name: str | None = None,
+) -> str:
+    """Join row and column labels, including Series names when available."""
+    labels = []
+    for value, name in ((row_value, row_name), (col_value, col_name)):
+        if value is None:
+            continue
+        label = "Missing" if value is pd.NA else str(value)
+        if name is not None:
+            label = f"{name} = {label}"
+        if label:
+            labels.append(label)
+    return " | ".join(labels)
+
+
+def _generate_facet_titles(
+    row_values: Sequence[Any | None],
+    col_values: Sequence[Any | None],
+    title_formatter: Callable[[Any | None, Any | None], str],
+) -> list[list[str]]:
+    """Call the formatter once per facet and validate each returned title."""
+    facet_titles = []
+    for row_value in row_values:
+        titles = []
+        for col_value in col_values:
+            title = title_formatter(row_value, col_value)
+            if not isinstance(title, str):
+                raise TypeError("title_formatter must return a str.")
+            titles.append(title)
+        facet_titles.append(titles)
+    return facet_titles
 
 
 def plot_spectra(
@@ -387,6 +425,7 @@ def plot_spectra(
     row: ArrayLike | None = None,
     col: ArrayLike | None = None,
     col_wrap: int | None = None,
+    title_formatter: Callable[[Any | None, Any | None], str] | None = None,
     sharex: bool | Literal["row", "col"] = True,
     sharey: bool | Literal["row", "col"] = True,
     hue: ArrayLike | None = None,
@@ -427,6 +466,16 @@ def plot_spectra(
         The grid retains the requested width even when there are fewer facets;
         unused axes in the last row are hidden. Category order and missing
         membership follow col as usual.
+    title_formatter : callable, optional
+        Called as title_formatter(row_value, col_value) to produce a string
+        title for each facet, including empty row-column combinations. Receives
+        the original category values, with None for an unused dimension and
+        pandas.NA for missing membership. Literal category strings such as
+        "Missing" are unchanged. Series names are not passed; include desired
+        names in the callable itself. Hidden wrap slots are skipped. Used only
+        with row or col; unfaceted plots do not call the formatter. If None,
+        retain the default titles described above. Formatter exceptions are
+        propagated before creating the grid.
     sharex, sharey : bool or {"row", "col"}, default=True
         Share coordinate or intensity axes across all facets, within each row,
         within each column, or not at all. Used only when faceting. With
@@ -528,7 +577,8 @@ def plot_spectra(
     TypeError
         If the arrays contain nonnumeric or complex values, or ``ax`` is not
         a Matplotlib axis, hue values are unhashable, or both ``color`` and
-        ``c`` are supplied.
+        ``c`` are supplied, or title_formatter is not callable or returns a
+        non-string title.
 
     Examples
     --------
@@ -612,7 +662,21 @@ def plot_spectra(
     >>> axes.shape
     (2, 1)
     >>> plt.close(fig)
+
+    Format facet titles using their category values:
+
+    >>> fig, axes = plot_spectra(
+    ...     y, col=treatment,
+    ...     title_formatter=lambda row_value, col_value: f"Treatment: {col_value}"
+    ... )
+    >>> axes[0, 0].get_title()
+    'Treatment: Control'
+    >>> plt.close(fig)
     """
+    # Validate the callback without calling it on an unfaceted plot.
+    if title_formatter is not None and not callable(title_formatter):
+        raise TypeError("title_formatter must be callable or None.")
+
     # Validate wrapping even when no facet membership has been supplied.
     if col_wrap is not None:
         if (
@@ -652,8 +716,8 @@ def plot_spectra(
             raise ValueError(f"{name} must be True, False, 'row', or 'col'.")
     y_array, x_array, bounds = _validate_spectra_arrays(y, x, ymin, ymax, fill_kws)
     count = y_array.shape[0]
-    row_codes, row_titles = _facet_membership(row, "row", count)
-    col_codes, col_titles = _facet_membership(col, "col", count)
+    row_codes, row_values, row_name = _facet_membership(row, "row", count)
+    col_codes, col_values, col_name = _facet_membership(col, "col", count)
 
     # Resolve colors globally so subsets never restart a palette or hue scale.
     if "c" in kwargs:
@@ -665,10 +729,17 @@ def plot_spectra(
     )
     colors = to_rgba_array(colors)
 
+    # Format all real facets before creating a figure, including empty panels.
+    if title_formatter is None:
+        title_formatter = partial(
+            _default_title_formatter, row_name=row_name, col_name=col_name
+        )
+    facet_titles = _generate_facet_titles(row_values, col_values, title_formatter)
+
     # Retain empty combinations and wrap columns into physical rows when needed.
-    ncols = len(col_titles) if col_wrap is None else col_wrap
+    ncols = len(col_values) if col_wrap is None else col_wrap
     nrows = (
-        len(row_titles) if col_wrap is None else (len(col_titles) + ncols - 1) // ncols
+        len(row_values) if col_wrap is None else (len(col_values) + ncols - 1) // ncols
     )
     fig, axes = plt.subplots(
         nrows,
@@ -682,16 +753,10 @@ def plot_spectra(
     for (i, j), facet_ax in np.ndenumerate(axes):
         # Map grid positions back to membership before slicing spectral rows.
         facet_row, facet_col = (i, j) if col_wrap is None else (0, i * ncols + j)
-        if facet_col >= len(col_titles):
+        if facet_col >= len(col_values):
             facet_ax.set_visible(False)
             continue
-        facet_ax.set_title(
-            " | ".join(
-                title
-                for title in (row_titles[facet_row], col_titles[facet_col])
-                if title
-            )
-        )
+        facet_ax.set_title(facet_titles[facet_row][facet_col])
         indices = np.flatnonzero((row_codes == facet_row) & (col_codes == facet_col))
         if not len(indices):
             continue
@@ -709,8 +774,8 @@ def plot_spectra(
 
     # A hidden final panel must not suppress the tick labels directly above it.
     if col_wrap is not None and sharex in (True, "col"):
-        for j in range(min(ncols, len(col_titles))):
-            bottom_row = (len(col_titles) - 1 - j) // ncols
+        for j in range(min(ncols, len(col_values))):
+            bottom_row = (len(col_values) - 1 - j) // ncols
             axes[bottom_row, j].tick_params(axis="x", labelbottom=True)
 
     # Draw one shared hue guide using the globally resolved colors and scale.
