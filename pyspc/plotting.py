@@ -15,7 +15,9 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from numpy.typing import ArrayLike
 
-__all__ = ("plot_spectra",)
+from ._plotting_breaks import _validate_xbreaks, break_xaxis
+
+__all__ = ("plot_spectra", "break_xaxis")
 
 
 def _palette_colors(palette: ArrayLike | Colormap, count: int) -> np.ndarray:
@@ -428,6 +430,7 @@ def plot_spectra(
     title_formatter: Callable[[Any | None, Any | None], str] | None = None,
     sharex: bool | Literal["row", "col"] = True,
     sharey: bool | Literal["row", "col"] = True,
+    xbreaks: ArrayLike | None = None,
     hue: ArrayLike | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
@@ -480,6 +483,13 @@ def plot_spectra(
         Share coordinate or intensity axes across all facets, within each row,
         within each column, or not at all. Used only when faceting. With
         col_wrap, rows and columns refer to physical positions in the grid.
+    xbreaks : array-like of shape (n_breaks, 2), optional
+        X-coordinate intervals to omit, such as [(1800, 2600)]. Each interval
+        has lower < upper, even for descending coordinates. Intervals must be
+        finite, disjoint, and not touching. Applied after plotting to each
+        visible spectral panel; legends and colorbars are not broken. Requires
+        a linear x scale. See break_xaxis for limitations on clipping, ticks,
+        and normal axis operations after breaking.
     hue : array-like of shape (n_spectra,), optional
         Values used to assign colors, one value per spectrum. Numeric values
         use a continuous color scale by default. Booleans and
@@ -672,7 +682,16 @@ def plot_spectra(
     >>> axes[0, 0].get_title()
     'Treatment: Control'
     >>> plt.close(fig)
+
+    Omit an interval of spectral coordinates:
+
+    >>> fig, ax = plot_spectra(y, x=x, xbreaks=[(500, 700)])
+    >>> plt.close(fig)
     """
+    # Reject malformed intervals before plotting or allocating any axes.
+    if xbreaks is not None:
+        xbreaks = _validate_xbreaks(xbreaks, ax=ax)
+
     # Validate the callback without calling it on an unfaceted plot.
     if title_formatter is not None and not callable(title_formatter):
         raise TypeError("title_formatter must be callable or None.")
@@ -692,7 +711,7 @@ def plot_spectra(
         col_wrap = int(col_wrap)
 
     if row is None and col is None:
-        return _single_ax_spectra_plot(
+        fig, ax = _single_ax_spectra_plot(
             y,
             x=x,
             hue=hue,
@@ -707,6 +726,9 @@ def plot_spectra(
             ax=ax,
             **kwargs,
         )
+        if xbreaks is not None:
+            break_xaxis(ax, xbreaks)
+        return fig, ax
 
     # Validate the full dataset and facet membership before creating a grid.
     if ax is not None:
@@ -803,6 +825,12 @@ def plot_spectra(
                 continue
             limit = max(abs(value) for value in facet_ax.get_ylim())
             facet_ax.set_ylim(-limit, limit)
+
+    # Break only visible spectral panels, after all artists and hue guides exist.
+    if xbreaks is not None:
+        for facet_ax in axes.flat:
+            if facet_ax.get_visible():
+                break_xaxis(facet_ax, xbreaks)
 
     return fig, axes
 
