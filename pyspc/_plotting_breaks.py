@@ -1,31 +1,56 @@
 """Post-process linear Matplotlib axes to omit x-coordinate intervals."""
 
+from numbers import Real
+
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.collections import PolyCollection
 from matplotlib.path import Path
 from matplotlib.scale import FuncScale
-from matplotlib.ticker import FixedLocator, MaxNLocator, NullLocator
+from matplotlib.ticker import FixedLocator, MaxNLocator, MultipleLocator, NullLocator
 from matplotlib.transforms import IdentityTransform, Transform
 from numpy.typing import ArrayLike
 
 
-def _validate_xbreaks(xbreaks: ArrayLike, *, ax: Axes | None = None) -> np.ndarray:
+def _validate_spacing(value: float | None, name: str) -> float | None:
+    """Accept a positive, finite data-coordinate spacing or None."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a positive finite number.")
+    try:
+        spacing = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{name} must be a positive finite number.") from error
+    if not np.isfinite(spacing) or spacing <= 0:
+        raise ValueError(f"{name} must be a positive finite number.")
+    return spacing
+
+
+def _set_xtick_spacing(ax: Axes, major: float | None, minor: float | None) -> None:
+    """Configure requested intervals without changing an unbroken axis's scale."""
+    if major is not None:
+        ax.xaxis.set_major_locator(MultipleLocator(major))
+    if minor is not None:
+        ax.xaxis.set_minor_locator(MultipleLocator(minor))
+
+
+def _validate_x_breaks(x_breaks: ArrayLike, *, ax: Axes | None = None) -> np.ndarray:
     """Normalize intervals and check an optional target without changing it."""
-    intervals = np.asarray(xbreaks)
+    intervals = np.asarray(x_breaks)
     if intervals.ndim == 1 and intervals.size == 0:
         intervals = intervals.reshape(0, 2)
     if intervals.ndim != 2 or intervals.shape[1] != 2:
-        raise ValueError("xbreaks must have shape (n_breaks, 2).")
+        raise ValueError("x_breaks must have shape (n_breaks, 2).")
     if intervals.dtype.kind not in "iuf":
-        raise TypeError("xbreaks must contain real numeric values.")
+        raise TypeError("x_breaks must contain real numeric values.")
     if not np.isfinite(intervals).all():
-        raise ValueError("xbreaks must contain finite values.")
+        raise ValueError("x_breaks must contain finite values.")
     if np.any(intervals[:, 0] >= intervals[:, 1]):
-        raise ValueError("Each xbreaks interval must have lower < upper.")
+        raise ValueError("Each x_breaks interval must have lower < upper.")
     intervals = intervals[np.argsort(intervals[:, 0])].astype(float)
     if np.any(intervals[1:, 0] <= intervals[:-1, 1]):
-        raise ValueError("xbreaks intervals must not overlap or touch.")
+        raise ValueError("x_breaks intervals must not overlap or touch.")
     if len(intervals) and ax is not None:
         if not isinstance(ax, Axes):
             raise TypeError("ax must be a matplotlib Axes.")
@@ -82,7 +107,14 @@ class _XBreakPathTransform(Transform):
         return Path(vertices, codes) if vertices else path
 
 
-def break_xaxis(ax: Axes, xbreaks: ArrayLike) -> Axes:
+def break_xaxis(
+    ax: Axes,
+    x_breaks: ArrayLike,
+    *,
+    x_breaks_gap: float | None = None,
+    xtick_major: float | None = None,
+    xtick_minor: float | None = None,
+) -> Axes:
     """Omit x-coordinate intervals while keeping the original Matplotlib axis.
 
     Parameters
@@ -90,26 +122,37 @@ def break_xaxis(ax: Axes, xbreaks: ArrayLike) -> Axes:
     ax : matplotlib.axes.Axes
         A linear x axis with its data and limits already configured. An axis
         previously processed by this function is also accepted.
-    xbreaks : array-like of shape (n_breaks, 2)
+    x_breaks : array-like of shape (n_breaks, 2)
         Intervals to omit, in original data coordinates, not ranges to retain.
         Each pair must contain finite values with lower < upper, even for an
         inverted axis. Intervals are sorted and must not overlap or touch.
-        Empty input is a no-op. Intervals outside the current view are ignored;
+        Empty input leaves the scale unchanged, but requested tick spacings
+        are still applied. Intervals outside the current view are ignored;
         partially visible intervals are clipped to the view. The entire view
         cannot be omitted.
+    x_breaks_gap : positive float, optional
+        Width of every gap in the same units as the retained x coordinates.
+        Defaults to xtick_minor when provided, otherwise half the major-tick
+        interval, including when the major interval is chosen automatically.
+    xtick_major, xtick_minor : positive float, optional
+        Tick spacings in original x-data units, anchored at zero. Ticks inside
+        omitted intervals are excluded. Explicit major spacing is honored
+        without thinning labels, even if labels become crowded. If None, major
+        spacing is automatic and minor ticks are disabled for broken axes.
+        With no visible breaks, omitted options leave existing locators intact.
 
     Returns
     -------
     matplotlib.axes.Axes
-        The supplied axis, with retained ranges on one linear scale, small gaps,
+        The supplied axis, with retained ranges on one linear scale, configured gaps,
         break marks, and ticks in the original data coordinates. No new axes are
         created. Original line data and legend handles are retained.
 
     Notes
     -----
     Apply this as a final plotting step. It installs a custom x scale and fixed
-    tick locators, disables minor ticks, and replaces clipping paths on lines,
-    filled polygons, and horizontal spines. Line and polygon paths are subdivided
+    tick locators, and replaces clipping paths on lines, filled polygons, and
+    horizontal spines. Line and polygon paths are subdivided
     at break boundaries so sparse data interpolate correctly beside each gap.
     Scatter, images, annotations, and custom artist clipping are not supported.
 
@@ -137,26 +180,37 @@ def break_xaxis(ax: Axes, xbreaks: ArrayLike) -> Axes:
     # Validate before changing artists or shared axis state.
     if not isinstance(ax, Axes):
         raise TypeError("ax must be a matplotlib Axes.")
-    intervals = _validate_xbreaks(xbreaks, ax=ax)
+    intervals = _validate_x_breaks(x_breaks, ax=ax)
+    x_breaks_gap = _validate_spacing(x_breaks_gap, "x_breaks_gap")
+    xtick_major = _validate_spacing(xtick_major, "xtick_major")
+    xtick_minor = _validate_spacing(xtick_minor, "xtick_minor")
     if not len(intervals):
+        _set_xtick_spacing(ax, xtick_major, xtick_minor)
         return ax
     limits = ax.get_xlim()
     lower, upper = sorted(limits)
     if not np.isfinite(upper - lower):
-        raise ValueError("The visible x range is too large for xbreaks.")
+        raise ValueError("The visible x range is too large for x_breaks.")
     intervals = intervals[(intervals[:, 1] > lower) & (intervals[:, 0] < upper)]
     if not len(intervals):
+        _set_xtick_spacing(ax, xtick_major, xtick_minor)
         return ax
     intervals = np.clip(intervals, lower, upper)
     widths = intervals[:, 1] - intervals[:, 0]
     retained_width = (upper - lower) - widths.sum()
     if retained_width <= 0:
-        raise ValueError("xbreaks cannot omit the entire visible x range.")
+        raise ValueError("x_breaks cannot omit the entire visible x range.")
 
-    # Use invertible compression: every omitted interval becomes a small gap.
-    gap = retained_width * 0.02
+    # Determine a global major interval and derive the default gap from ticks.
+    major = xtick_major
+    if major is None:
+        automatic = MaxNLocator(nbins=max(2, ax.xaxis.get_tick_space()), min_n_ticks=2)
+        major = float(np.min(np.diff(automatic.tick_values(0, retained_width))))
+    gap = x_breaks_gap
+    if gap is None:
+        gap = xtick_minor if xtick_minor is not None else major / 2
     if gap <= 0:
-        raise ValueError("The retained x range is too small for xbreaks.")
+        raise ValueError("The retained x range is too small for x_breaks.")
     reductions = widths - gap
     starts = intervals[:, 0] - lower
     compressed_starts = starts - (np.cumsum(reductions) - reductions)
@@ -182,20 +236,29 @@ def break_xaxis(ax: Axes, xbreaks: ArrayLike) -> Axes:
     edges = np.concatenate(([lower], intervals.ravel(), [upper])).reshape(-1, 2)
     retained = edges[edges[:, 1] > edges[:, 0]]
 
-    # Choose readable data-coordinate ticks independently within retained ranges.
-    ticks = []
-    for left, right in retained:
-        bins = max(1, round(6 * (right - left) / retained_width))
-        candidates = MaxNLocator(nbins=bins, min_n_ticks=2).tick_values(left, right)
-        ticks.extend(candidates[(candidates >= left) & (candidates <= right)])
-    # Ticks on opposite sides of a compressed gap must not crowd each other.
-    spacing = (forward(upper) - forward(lower)) / max(2, ax.xaxis.get_tick_space())
-    separated = []
-    for tick in np.unique(ticks):
-        if not separated or forward(tick) - forward(separated[-1]) >= spacing:
-            separated.append(tick)
-    ax.xaxis.set_major_locator(FixedLocator(separated))
-    ax.xaxis.set_minor_locator(NullLocator())
+    # Generate regular data-coordinate ticks only in the retained ranges.
+    for interval, setter in (
+        (major, ax.xaxis.set_major_locator),
+        (xtick_minor, ax.xaxis.set_minor_locator),
+    ):
+        if interval is None:
+            setter(NullLocator())
+            continue
+        ticks = []
+        locator = MultipleLocator(interval)
+        for left, right in retained:
+            candidates = locator.tick_values(left, right)
+            ticks.extend(candidates[(candidates >= left) & (candidates <= right)])
+        setter(FixedLocator(np.unique(ticks)))
+
+    # Only automatic major labels may be thinned near compressed gaps.
+    if xtick_major is None:
+        spacing = (forward(upper) - forward(lower)) / max(2, ax.xaxis.get_tick_space())
+        separated = []
+        for tick in ax.get_xticks():
+            if not separated or forward(tick) - forward(separated[-1]) >= spacing:
+                separated.append(tick)
+        ax.xaxis.set_major_locator(FixedLocator(separated))
 
     # Clip visible segments, interpolating original line/band paths at boundaries.
     clip_path = Path.make_compound_path_from_polys(

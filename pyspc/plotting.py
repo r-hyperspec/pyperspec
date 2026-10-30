@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from numpy.typing import ArrayLike
 
-from ._plotting_breaks import _validate_xbreaks, break_xaxis
+from ._plotting_breaks import _validate_spacing, _validate_x_breaks, break_xaxis
 
 __all__ = ("plot_spectra", "break_xaxis")
 
@@ -430,7 +430,10 @@ def plot_spectra(
     title_formatter: Callable[[Any | None, Any | None], str] | None = None,
     sharex: bool | Literal["row", "col"] = True,
     sharey: bool | Literal["row", "col"] = True,
-    xbreaks: ArrayLike | None = None,
+    x_breaks: ArrayLike | None = None,
+    x_breaks_gap: float | None = None,
+    xtick_major: float | None = None,
+    xtick_minor: float | None = None,
     hue: ArrayLike | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
@@ -483,13 +486,25 @@ def plot_spectra(
         Share coordinate or intensity axes across all facets, within each row,
         within each column, or not at all. Used only when faceting. With
         col_wrap, rows and columns refer to physical positions in the grid.
-    xbreaks : array-like of shape (n_breaks, 2), optional
+    x_breaks : array-like of shape (n_breaks, 2), optional
         X-coordinate intervals to omit, such as [(1800, 2600)]. Each interval
         has lower < upper, even for descending coordinates. Intervals must be
         finite, disjoint, and not touching. Applied after plotting to each
         visible spectral panel; legends and colorbars are not broken. Requires
         a linear x scale. See break_xaxis for limitations on clipping, ticks,
         and normal axis operations after breaking.
+    x_breaks_gap : positive float, optional
+        Displayed gap width in x-data units, with the same scale as retained
+        coordinates. Defaults to xtick_minor when provided, otherwise half the
+        major-tick interval (automatic if xtick_major is None). Only used when
+        there are visible x_breaks.
+    xtick_major, xtick_minor : positive float, optional
+        Major and minor tick spacings in original x-data units, anchored at
+        zero. Supported with or without breaks. Ticks inside omitted intervals
+        are excluded. Explicit major spacing is honored without thinning,
+        even if labels become crowded. Without breaks, None leaves the existing
+        locator unchanged. With breaks, None selects automatic major ticks or
+        disables minor ticks, respectively.
     hue : array-like of shape (n_spectra,), optional
         Values used to assign colors, one value per spectrum. Numeric values
         use a continuous color scale by default. Booleans and
@@ -685,12 +700,18 @@ def plot_spectra(
 
     Omit an interval of spectral coordinates:
 
-    >>> fig, ax = plot_spectra(y, x=x, xbreaks=[(500, 700)])
+    >>> fig, ax = plot_spectra(
+    ...     y, x=x, x_breaks=[(500, 700)], x_breaks_gap=50,
+    ...     xtick_major=100, xtick_minor=20
+    ... )
     >>> plt.close(fig)
     """
     # Reject malformed intervals before plotting or allocating any axes.
-    if xbreaks is not None:
-        xbreaks = _validate_xbreaks(xbreaks, ax=ax)
+    if x_breaks is not None:
+        x_breaks = _validate_x_breaks(x_breaks, ax=ax)
+    x_breaks_gap = _validate_spacing(x_breaks_gap, "x_breaks_gap")
+    xtick_major = _validate_spacing(xtick_major, "xtick_major")
+    xtick_minor = _validate_spacing(xtick_minor, "xtick_minor")
 
     # Validate the callback without calling it on an unfaceted plot.
     if title_formatter is not None and not callable(title_formatter):
@@ -726,8 +747,14 @@ def plot_spectra(
             ax=ax,
             **kwargs,
         )
-        if xbreaks is not None:
-            break_xaxis(ax, xbreaks)
+        if x_breaks is not None or xtick_major is not None or xtick_minor is not None:
+            break_xaxis(
+                ax,
+                [] if x_breaks is None else x_breaks,
+                x_breaks_gap=x_breaks_gap,
+                xtick_major=xtick_major,
+                xtick_minor=xtick_minor,
+            )
         return fig, ax
 
     # Validate the full dataset and facet membership before creating a grid.
@@ -826,11 +853,17 @@ def plot_spectra(
             limit = max(abs(value) for value in facet_ax.get_ylim())
             facet_ax.set_ylim(-limit, limit)
 
-    # Break only visible spectral panels, after all artists and hue guides exist.
-    if xbreaks is not None:
+    # Configure x axes only on visible spectral panels, after all artists exist.
+    if x_breaks is not None or xtick_major is not None or xtick_minor is not None:
         for facet_ax in axes.flat:
             if facet_ax.get_visible():
-                break_xaxis(facet_ax, xbreaks)
+                break_xaxis(
+                    facet_ax,
+                    [] if x_breaks is None else x_breaks,
+                    x_breaks_gap=x_breaks_gap,
+                    xtick_major=xtick_major,
+                    xtick_minor=xtick_minor,
+                )
 
     return fig, axes
 

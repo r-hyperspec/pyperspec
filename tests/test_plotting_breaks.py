@@ -133,20 +133,20 @@ def test_break_xaxis_can_be_applied_to_each_shared_axis_and_reapplied():
     np.testing.assert_allclose(*positions)
 
 
-@pytest.mark.parametrize("xbreaks", [[], [(20, 30)]])
-def test_break_xaxis_is_a_noop_without_visible_breaks(xbreaks):
+@pytest.mark.parametrize("x_breaks", [[], [(20, 30)]])
+def test_break_xaxis_is_a_noop_without_visible_breaks(x_breaks):
     _, ax = plt.subplots()
     original = ax.plot([0, 10], [0, 1])[0]
     ax.set_xlim(0, 10)
 
-    assert break_xaxis(ax, xbreaks) is ax
+    assert break_xaxis(ax, x_breaks) is ax
     assert ax.get_xscale() == "linear"
     assert list(ax.lines) == [original]
     assert original.get_clip_path() is None
 
 
 @pytest.mark.parametrize(
-    "xbreaks, error",
+    "x_breaks, error",
     [
         ([2, 4], ValueError),
         ([[2, 3, 4]], ValueError),
@@ -160,13 +160,13 @@ def test_break_xaxis_is_a_noop_without_visible_breaks(xbreaks):
         ([(False, True)], TypeError),
     ],
 )
-def test_invalid_breaks_are_rejected_before_axes_are_modified(xbreaks, error):
+def test_invalid_breaks_are_rejected_before_axes_are_modified(x_breaks, error):
     fig, ax = plt.subplots()
     line = ax.plot([0, 10], [0, 1])[0]
     ax.set_xlim(0, 10)
 
-    with pytest.raises(error, match="xbreaks"):
-        break_xaxis(ax, xbreaks)
+    with pytest.raises(error, match="x_breaks"):
+        break_xaxis(ax, x_breaks)
 
     assert ax.get_xscale() == "linear"
     assert list(ax.lines) == [line]
@@ -206,7 +206,7 @@ def test_plot_spectra_applies_breaks_to_spectral_panels_preserving_hue_guides(
     x = np.linspace(0, 10, 11)
     y = np.tile(x, (5, 1))
     fig, axes = plot_spectra(
-        y, x=x, ymin=y - 1, ymax=y + 1, hue=hue, xbreaks=[(4, 8)], **layout
+        y, x=x, ymin=y - 1, ymax=y + 1, hue=hue, x_breaks=[(4, 8)], **layout
     )
     panels = np.asarray(axes).reshape(-1)
 
@@ -230,25 +230,25 @@ def test_plot_spectra_applies_breaks_to_spectral_panels_preserving_hue_guides(
 
 def test_plot_spectra_validates_breaks_before_creating_a_figure():
     figures = plt.get_fignums()
-    with pytest.raises(ValueError, match="xbreaks"):
-        plot_spectra([[1, 2]], xbreaks=[(4, 2)])
+    with pytest.raises(ValueError, match="x_breaks"):
+        plot_spectra([[1, 2]], x_breaks=[(4, 2)])
     assert plt.get_fignums() == figures
 
 
-@pytest.mark.parametrize("xbreaks", [[(-2, 2)], [(8, 12)], [(-2, 2), (8, 12)]])
-def test_break_xaxis_clips_partial_intervals_to_the_current_view(xbreaks):
+@pytest.mark.parametrize("x_breaks", [[(-2, 2)], [(8, 12)], [(-2, 2), (8, 12)]])
+def test_break_xaxis_clips_partial_intervals_to_the_current_view(x_breaks):
     _, ax = plt.subplots()
     line = ax.plot([0, 10], [0, 1])[0]
     ax.set(xlim=(0, 10), ylim=(0, 1))
 
-    break_xaxis(ax, xbreaks)
+    break_xaxis(ax, x_breaks)
 
     np.testing.assert_allclose(ax.get_xlim(), [0, 10])
     clipping = line.get_clip_path().get_fully_transformed_path()
     points = ax.transData.transform([[1, 0.5], [5, 0.5], [9, 0.5]])
     np.testing.assert_array_equal(
         clipping.contains_points(points),
-        [xbreaks[0][0] >= 0, True, xbreaks[-1][1] <= 10],
+        [x_breaks[0][0] >= 0, True, x_breaks[-1][1] <= 10],
     )
 
 
@@ -321,8 +321,138 @@ def test_plot_spectra_rejects_non_linear_breaks_before_drawing():
     ax.set_xscale("log")
 
     with pytest.raises(ValueError, match="linear"):
-        plot_spectra([[1, 2]], x=[1, 10], ax=ax, xbreaks=[(2, 4)])
+        plot_spectra([[1, 2]], x=[1, 10], ax=ax, x_breaks=[(2, 4)])
 
     assert list(ax.lines) == [existing]
     assert fig.axes == [ax]
     assert ax.get_xscale() == "log"
+
+
+@pytest.mark.parametrize(
+    "gap, major, minor, expected",
+    [
+        (50, 100, 20, 50),
+        (None, 100, 20, 20),
+        (None, 100, None, 50),
+        (None, None, 20, 20),
+    ],
+)
+def test_break_gap_is_measured_in_retained_x_data_units(gap, major, minor, expected):
+    _, ax = plt.subplots()
+    ax.plot([0, 1000], [0, 1])
+    ax.set_xlim(0, 1000)
+
+    break_xaxis(
+        ax, [(300, 800)], x_breaks_gap=gap, xtick_major=major, xtick_minor=minor
+    )
+
+    transformed = ax.xaxis.get_transform().transform(np.array([100, 200, 300, 800]))
+    np.testing.assert_allclose(transformed[1] - transformed[0], 100)
+    np.testing.assert_allclose(transformed[3] - transformed[2], expected)
+
+
+def test_default_gap_is_half_the_automatic_major_spacing():
+    _, ax = plt.subplots()
+    ax.plot([0, 1000], [0, 1])
+    ax.set_xlim(0, 1000)
+
+    break_xaxis(ax, [(300, 800)])
+
+    major = np.min(np.diff(ax.get_xticks()))
+    transformed = ax.xaxis.get_transform().transform(np.array([300, 800]))
+    np.testing.assert_allclose(np.diff(transformed), major / 2)
+
+
+@pytest.mark.parametrize("inverted", [False, True])
+def test_explicit_major_and_minor_spacing_omits_only_ticks_inside_breaks(inverted):
+    _, ax = plt.subplots(figsize=(3, 2))
+    ax.plot([0, 1000], [0, 1])
+    limits = [1000, 0] if inverted else [0, 1000]
+    ax.set_xlim(limits)
+
+    break_xaxis(ax, [(300, 800)], xtick_major=100, xtick_minor=20)
+
+    np.testing.assert_array_equal(ax.get_xticks(), [0, 100, 200, 300, 800, 900, 1000])
+    np.testing.assert_array_equal(
+        ax.get_xticks(minor=True),
+        [
+            20,
+            40,
+            60,
+            80,
+            120,
+            140,
+            160,
+            180,
+            220,
+            240,
+            260,
+            280,
+            820,
+            840,
+            860,
+            880,
+            920,
+            940,
+            960,
+            980,
+        ],
+    )
+    np.testing.assert_allclose(ax.get_xlim(), limits)
+
+
+def test_plot_spectra_can_configure_major_and_minor_ticks_without_breaks():
+    fig, ax = plot_spectra([[1, 2]], x=[0, 1000], xtick_major=100, xtick_minor=20)
+    ax.set_xlim(0, 1000)
+
+    np.testing.assert_array_equal(ax.get_xticks()[1:-1], np.arange(0, 1001, 100))
+    minor = ax.get_xticks(minor=True)
+    minor = minor[(minor > 0) & (minor < 1000)]
+    np.testing.assert_array_equal(
+        minor, [value for value in range(20, 1000, 20) if value % 100]
+    )
+    assert ax.get_xscale() == "linear"
+    assert len(ax.lines) == 1
+    assert fig.axes == [ax]
+
+
+def test_plot_spectra_applies_tick_and_gap_controls_to_wrapped_facets_only():
+    x = np.linspace(0, 1000, 11)
+    fig, axes = plot_spectra(
+        np.tile(x, (3, 1)),
+        x=x,
+        col=list("ABC"),
+        col_wrap=2,
+        hue=[1, 2, 3],
+        x_breaks=[(300, 800)],
+        x_breaks_gap=50,
+        xtick_major=100,
+        xtick_minor=20,
+    )
+
+    for ax in axes.flat:
+        if not ax.get_visible():
+            assert not ax.lines
+            continue
+        ticks = ax.get_xticks()
+        assert np.all(ticks % 100 == 0)
+        assert not np.any((ticks > 300) & (ticks < 800))
+        minor = ax.get_xticks(minor=True)
+        assert len(minor)
+        assert np.all(minor % 20 == 0)
+        assert not np.any((minor > 300) & (minor < 800))
+        transformed = ax.xaxis.get_transform().transform(np.array([300, 800]))
+        np.testing.assert_allclose(np.diff(transformed), 50)
+    assert fig.axes[-1].get_xscale() == "linear"
+    np.testing.assert_allclose(fig.axes[-1].get_ylim(), [1, 3])
+
+
+@pytest.mark.parametrize("option", ["x_breaks_gap", "xtick_major", "xtick_minor"])
+@pytest.mark.parametrize("value", [0, -1, np.nan, np.inf, True, "20"])
+def test_invalid_tick_and_gap_options_fail_before_drawing(option, value):
+    figures = plt.get_fignums()
+
+    with pytest.raises((TypeError, ValueError), match=option):
+        plot_spectra([[1, 2]], **{option: value})
+
+    assert plt.get_fignums() == figures
