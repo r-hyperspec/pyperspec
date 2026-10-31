@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
+from matplotlib.cbook import normalize_kwargs
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Colormap, Normalize, is_color_like, to_rgba, to_rgba_array
 from matplotlib.figure import Figure
@@ -340,6 +341,40 @@ def _resolve_color_params(
     return list(line_colors), None, [], None, None
 
 
+def _resolve_hue_styles(
+    hue_styles: Mapping[Any, Mapping[str, Any]] | None,
+    codes: np.ndarray | None,
+    categories: Sequence[Any],
+) -> list[dict[str, Any]] | None:
+    """Validate discrete hue overrides and resolve one style per spectral row."""
+    if hue_styles is None:
+        return None
+    if not isinstance(hue_styles, Mapping):
+        raise TypeError("hue_styles must be a mapping of categories to style mappings.")
+    if codes is None:
+        raise ValueError(
+            "hue_styles requires discrete hue; use color_type='discrete' "
+            "for numeric categories."
+        )
+
+    # Normalize aliases and validate styles without creating axes or changing artists.
+    styles_by_code = []
+    for category in categories:
+        options = hue_styles.get(category, {})
+        if not isinstance(options, Mapping):
+            raise TypeError("Each hue_styles entry must be a style mapping.")
+        options = normalize_kwargs(options, Line2D)
+        if set(options).difference(("linewidth", "linestyle", "alpha")):
+            raise ValueError(
+                "hue_styles supports only linewidth, linestyle, and alpha."
+            )
+        Line2D([], [], **options)
+        styles_by_code.append(options)
+
+    # Missing hue and unspecified categories inherit the global line settings.
+    return [{} if code < 0 else styles_by_code[code] for code in codes]
+
+
 def _add_legend(
     target: Axes | Figure,
     lines: Sequence[Line2D],
@@ -435,6 +470,7 @@ def plot_spectra(
     xtick_major: float | None = None,
     xtick_minor: float | None = None,
     hue: ArrayLike | None = None,
+    hue_styles: Mapping[Any, Mapping[str, Any]] | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
     color_type: Literal["auto", "discrete"] = "auto",
@@ -520,6 +556,16 @@ def plot_spectra(
         stable color scale.
         Ranges too large for floating-point normalization are rejected.
         A named Series labels the legend or colorbar. Spectra are not aggregated.
+    hue_styles : mapping of categories to style mappings, optional
+        Per-category line overrides for linewidth (or lw), linestyle (or ls),
+        and alpha. Requires discrete hue; for numeric categories, supply
+        color_type="discrete" or a pandas categorical vector. Each override
+        takes precedence over the corresponding global line property in kwargs.
+        Unspecified groups and properties, including missing hue, retain their
+        global settings. Extra category keys are ignored. Colors remain
+        controlled by palette; other properties are not accepted here.
+        Styles are consistent across facets and reflected in the legend.
+        Overrides apply only to lines; use fill_kws to style shaded bands.
     color : Matplotlib color or sequence of colors, optional
         One literal color for all spectra, including RGB/RGBA values, or a
         sequence containing exactly one color per spectrum. A numeric RGB/RGBA
@@ -598,12 +644,14 @@ def plot_spectra(
         palettes or hue are invalid, color is combined with palette or hue,
         facet membership or sharing options are invalid, or ax is supplied with
         facets, or col_wrap is not a positive integer or is used without col
-        or with row.
+        or with row, or hue_styles is used without discrete hue or contains
+        unsupported properties or invalid style values.
     TypeError
         If the arrays contain nonnumeric or complex values, or ``ax`` is not
         a Matplotlib axis, hue values are unhashable, or both ``color`` and
         ``c`` are supplied, or title_formatter is not callable or returns a
-        non-string title.
+        non-string title, or hue_styles or an observed category's style is not
+        a mapping.
 
     Examples
     --------
@@ -644,6 +692,17 @@ def plot_spectra(
     ...     [[2, 3, 2], [3, 4, 3], [4, 5, 4]], x=x,
     ...     hue=["A", "A", "B"], palette={"A": "tab:blue", "B": "tab:orange"}
     ... )
+    >>> plt.close(fig)
+
+    Override line properties for selected discrete hue groups:
+
+    >>> fig, ax = plot_spectra(
+    ...     y, hue=["Control", "Treated"], linewidth=1,
+    ...     hue_styles={"Control": {"linestyle": "--", "alpha": 0.6},
+    ...                 "Treated": {"linewidth": 2.5}}
+    ... )
+    >>> [line.get_linewidth() for line in ax.lines]
+    [1.0, 2.5]
     >>> plt.close(fig)
 
     Declare category order with pandas; spectral row order stays unchanged:
@@ -736,6 +795,7 @@ def plot_spectra(
             y,
             x=x,
             hue=hue,
+            hue_styles=hue_styles,
             color=color,
             palette=palette,
             color_type=color_type,
@@ -777,6 +837,7 @@ def plot_spectra(
         color, hue, palette, count=count, color_type=color_type
     )
     colors = to_rgba_array(colors)
+    line_styles = _resolve_hue_styles(hue_styles, hue_codes, categories)
 
     # Format all real facets before creating a figure, including empty panels.
     if title_formatter is None:
@@ -819,7 +880,10 @@ def plot_spectra(
             ax=facet_ax,
             **kwargs,
         )
-        lines_by_index.update(zip(indices, facet_ax.lines))
+        for index, line in zip(indices, facet_ax.lines):
+            if line_styles is not None:
+                line.set(**line_styles[index])
+            lines_by_index[index] = line
 
     # A hidden final panel must not suppress the tick labels directly above it.
     if col_wrap is not None and sharex in (True, "col"):
@@ -873,6 +937,7 @@ def _single_ax_spectra_plot(
     x: ArrayLike | None = None,
     *,
     hue: ArrayLike | None = None,
+    hue_styles: Mapping[Any, Mapping[str, Any]] | None = None,
     color: ArrayLike | None = None,
     palette: ArrayLike | Colormap | Mapping[Any, Any] | None = None,
     color_type: Literal["auto", "discrete"] = "auto",
@@ -899,6 +964,7 @@ def _single_ax_spectra_plot(
     line_colors, hue_codes, categories, hue_title, mappable = _resolve_color_params(
         color, hue, palette, count=y_array.shape[0], color_type=color_type
     )
+    line_styles = _resolve_hue_styles(hue_styles, hue_codes, categories)
 
     # Validate the target before drawing.
     if ax is not None and not isinstance(ax, Axes):
@@ -912,8 +978,10 @@ def _single_ax_spectra_plot(
 
     # Matplotlib treats columns as lines, while spectral arrays use rows.
     lines = ax.plot(x_array, y_array.T, color=line_colors[0], **kwargs)
-    for line, line_color in zip(lines, line_colors):
+    for index, (line, line_color) in enumerate(zip(lines, line_colors)):
         line.set_color(line_color)
+        if line_styles is not None:
+            line.set(**line_styles[index])
 
     # Use the resolved line colors without advancing the axis's color cycle.
     if bounds is not None:
