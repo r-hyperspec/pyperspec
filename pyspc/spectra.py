@@ -2104,6 +2104,248 @@ class SpectraFrame:
             **kwargs,
         )
 
+    def plot_aggregate_with_ribbon(
+        self,
+        aggregate: Callable[[np.ndarray], np.ndarray],
+        *,
+        groupby: str | list[str] | None = None,
+        row: str | ArrayLike | None = None,
+        col: str | ArrayLike | None = None,
+        hue: str | ArrayLike | None = None,
+        **kwargs: Any,
+    ) -> tuple[Figure, Axes | np.ndarray]:
+        """Plot a custom aggregate as a central line with a shaded ribbon.
+
+        Parameters
+        ----------
+        aggregate : callable
+            Called once per group with a spectral array of shape
+            (n_group_spectra, n_wavelengths). Must return an array of shape
+            (3, n_wavelengths), containing absolute lower bounds, central
+            values, and absolute upper bounds, in that order. For example,
+            these can be minimum, mean, and maximum intensities.
+        groupby : str or list of str, optional
+            Extra metadata columns to group by, alongside row, col, and hue.
+            Only observed combinations are summarized; missing groups are
+            retained. Without grouping, summarize all spectra. Summaries
+            follow first-observation order.
+        row, col, hue : str or array-like, optional
+            Plot roles, resolved as in :meth:`plot`: metadata column names,
+            "index", or positional vectors. All supplied roles also define
+            groups, including numeric hue. Names and categorical order are
+            retained.
+        **kwargs
+            Arguments forwarded to :func:`pyspc.plotting.plot_spectra`, including
+            linewidth, linestyle, palette, legend, and fill_kws. Colors supplied
+            per spectrum must match the number of summaries. ymin and ymax
+            come from aggregate and cannot be supplied separately.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure containing the summary spectra and any hue colorbar.
+        ax : matplotlib.axes.Axes or numpy.ndarray of Axes
+            One axis without facets, or a 2D facet grid, as in plot_spectra.
+
+        Examples
+        --------
+        >>> import matplotlib.pyplot as plt
+        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[400, 600])
+        >>> def mean_range(spectra):
+        ...     return np.stack((spectra.min(axis=0), spectra.mean(axis=0),
+        ...                      spectra.max(axis=0)))
+        >>> fig, ax = sf.plot_aggregate_with_ribbon(
+        ...     mean_range, linewidth=2, linestyle="--"
+        ... )
+        >>> ax.lines[0].get_ydata().tolist()
+        [2.0, 3.0]
+        >>> plt.close(fig)
+        """
+        if self.nspc == 0:
+            raise ValueError("Cannot aggregate an empty SpectraFrame.")
+        if "ymin" in kwargs or "ymax" in kwargs:
+            raise ValueError("Aggregation plots compute their own ymin and ymax.")
+
+        # Combine plot memberships and extra metadata columns by position.
+        roles = {
+            name: self._resolve_plot_param(value)
+            for name, value in (("row", row), ("col", col), ("hue", hue))
+        }
+        vectors = [values for values in roles.values() if values is not None]
+        vectors.extend(self.data[name] for name in self._get_groupby(groupby) or [])
+        if vectors:
+            membership = pd.concat(
+                [values.reset_index(drop=True) for values in vectors],
+                axis=1,
+                ignore_index=True,
+            )
+            grouped = membership.groupby(
+                list(membership.columns), observed=True, dropna=False, sort=False
+            )
+            # Keep summaries in first-observation order; generic plotting orders facets.
+            groups = sorted(grouped.indices.values(), key=lambda indices: indices[0])
+        else:
+            groups = [np.arange(self.nspc)]
+
+        # Retain representative role values with their names and categorical dtypes.
+        representatives = [indices[0] for indices in groups]
+        plot_roles = {
+            name: None if values is None else values.iloc[representatives]
+            for name, values in roles.items()
+        }
+        summaries = np.stack([aggregate(self.spc[indices]) for indices in groups])
+        return plot_spectra(
+            summaries[:, 1],
+            x=self.wl,
+            ymin=summaries[:, 0],
+            ymax=summaries[:, 2],
+            **plot_roles,
+            **kwargs,
+        )
+
+    def plot_mean_sd(
+        self,
+        *,
+        groupby: str | list[str] | None = None,
+        row: str | ArrayLike | None = None,
+        col: str | ArrayLike | None = None,
+        hue: str | ArrayLike | None = None,
+        ddof: int = 0,
+        ignore_na: bool = False,
+        **kwargs: Any,
+    ) -> tuple[Figure, Axes | np.ndarray]:
+        """Plot a mean spectrum and a shaded mean +/- standard-deviation band.
+
+        Parameters
+        ----------
+        groupby : str or list of str, optional
+            Extra metadata columns to group by, in addition to row, col, and
+            hue. Each observed combination produces one summary, computed
+            across spectra at each wavelength. Missing groups are retained;
+            unused categorical levels are omitted. Without any grouping,
+            summarize all spectra. Summaries follow first-observation order.
+        row, col, hue : str or array-like, optional
+            Plot roles, resolved as in :meth:`plot`: metadata column names,
+            "index", or positional vectors. All supplied roles also define
+            groups, including numeric hue. Category order and missing-value
+            labels follow plot_spectra.
+        ddof : int, default=0
+            Delta degrees of freedom for numpy.std: the divisor is N - ddof.
+            The default matches SpectraFrame.std.
+        ignore_na : bool, default=False
+            If True, ignore NaN intensities when computing means and standard
+            deviations. Otherwise NaNs propagate at the affected wavelengths.
+        **kwargs
+            Arguments forwarded to :func:`pyspc.plotting.plot_spectra`, including
+            palette, legend, col_wrap, title_formatter, fill_kws, and x_breaks.
+            Colors supplied per spectrum must match the number of summaries.
+            ymin and ymax are computed by this method and cannot be supplied.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure containing the summary spectra and any hue colorbar.
+        ax : matplotlib.axes.Axes or numpy.ndarray of Axes
+            One axis without facets, or a 2D facet grid, as in plot_spectra.
+
+        Examples
+        --------
+        >>> import matplotlib.pyplot as plt
+        >>> sf = SpectraFrame([[1, 2], [3, 4]], wl=[400, 600])
+        >>> fig, ax = sf.plot_mean_sd()
+        >>> ax.lines[0].get_ydata().tolist()
+        [2.0, 3.0]
+        >>> plt.close(fig)
+        """
+
+        # Reduce across spectra, leaving the wavelength dimension unchanged.
+        def aggregate(spectra: np.ndarray) -> np.ndarray:
+            mean = np.nanmean if ignore_na else np.mean
+            std = np.nanstd if ignore_na else np.std
+            center = mean(spectra, axis=0)
+            spread = std(spectra, axis=0, ddof=ddof)
+            return np.stack((center - spread, center, center + spread))
+
+        return self.plot_aggregate_with_ribbon(
+            aggregate, groupby=groupby, row=row, col=col, hue=hue, **kwargs
+        )
+
+    def plot_quantiles(
+        self,
+        *,
+        q: ArrayLike = (0.25, 0.5, 0.75),
+        groupby: str | list[str] | None = None,
+        row: str | ArrayLike | None = None,
+        col: str | ArrayLike | None = None,
+        hue: str | ArrayLike | None = None,
+        ignore_na: bool = False,
+        **kwargs: Any,
+    ) -> tuple[Figure, Axes | np.ndarray]:
+        """Plot a central quantile and a shaded band between two outer quantiles.
+
+        Parameters
+        ----------
+        q : array-like of length 3, default=(0.25, 0.5, 0.75)
+            Lower, central, and upper quantile probabilities, in nondecreasing
+            order within [0, 1]. The default draws a median line and an
+            interquartile band. Uses numpy.quantile's default linear method.
+        groupby : str or list of str, optional
+            Extra metadata columns to group by, alongside row, col, and hue.
+            Each observed combination produces one summary across spectra at
+            each wavelength. Missing groups are retained and unused categories
+            omitted. Without grouping, summarize all spectra. Summaries follow
+            first-observation order.
+        row, col, hue : str or array-like, optional
+            Plot roles, resolved as in :meth:`plot`: metadata column names,
+            "index", or positional vectors. All supplied roles also define
+            groups, including numeric hue. Category order and missing-value
+            labels follow plot_spectra.
+        ignore_na : bool, default=False
+            If True, ignore NaN intensities when computing quantiles. Otherwise
+            NaNs propagate at the affected wavelengths.
+        **kwargs
+            Arguments forwarded to :func:`pyspc.plotting.plot_spectra`, including
+            palette, legend, col_wrap, title_formatter, fill_kws, and x_breaks.
+            Colors supplied per spectrum must match the number of summaries.
+            ymin and ymax are computed by this method and cannot be supplied.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure containing the summary spectra and any hue colorbar.
+        ax : matplotlib.axes.Axes or numpy.ndarray of Axes
+            One axis without facets, or a 2D facet grid, as in plot_spectra.
+
+        Examples
+        --------
+        >>> import matplotlib.pyplot as plt
+        >>> sf = SpectraFrame([[1, 2], [3, 4], [9, 10]], wl=[400, 600])
+        >>> fig, ax = sf.plot_quantiles(q=(0.1, 0.5, 0.9))
+        >>> ax.lines[0].get_ydata().tolist()
+        [3.0, 4.0]
+        >>> plt.close(fig)
+        """
+        # Validate probabilities before aggregation or figure creation.
+        q = np.asarray(q)
+        if not np.issubdtype(q.dtype, np.number) or np.iscomplexobj(q):
+            raise TypeError("q must contain real numeric probabilities.")
+        if (
+            q.shape != (3,)
+            or not np.all(np.isfinite(q))
+            or np.any((q < 0) | (q > 1))
+            or np.any(q[1:] < q[:-1])
+        ):
+            raise ValueError("q must be three ordered probabilities within [0, 1].")
+
+        # Quantiles are returned in lower, central, upper order for each group.
+        def aggregate(spectra: np.ndarray) -> np.ndarray:
+            quantile = np.nanquantile if ignore_na else np.quantile
+            return quantile(spectra, q, axis=0)
+
+        return self.plot_aggregate_with_ribbon(
+            aggregate, groupby=groupby, row=row, col=col, hue=hue, **kwargs
+        )
+
     # ----------------------------------------------------------------------
     def _to_print_dataframe(self) -> pd.DataFrame:
         # Get value of pandas display.max_columns option
