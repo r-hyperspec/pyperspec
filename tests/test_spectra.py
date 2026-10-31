@@ -958,17 +958,17 @@ class TestSpectraFramePlot:
         frame.plot()
 
         # Plot in one row
-        frame.plot(rows="B")
-        frame.plot(rows=[1, 2, 3, 4, 5, 6])
+        frame.plot(row="B")
+        frame.plot(row=[1, 2, 3, 4, 5, 6])
 
         # Plot in one column
-        frame.plot(columns="B")
-        frame.plot(columns=[1, 2, 3, 4, 5, 6])
+        frame.plot(col="B")
+        frame.plot(col=[1, 2, 3, 4, 5, 6])
 
         # Plot 2d grid
-        frame.plot(rows="B", columns="A")
-        frame.plot(rows="B", columns=[1, 2, 3, 4, 5, 6])
-        frame.plot(columns="B", rows=[1, 2, 3, 4, 5, 6])
+        frame.plot(row="B", col="A")
+        frame.plot(row="B", col=[1, 2, 3, 4, 5, 6])
+        frame.plot(col="B", row=[1, 2, 3, 4, 5, 6])
 
     def test_plot_accepts_many_color_categories_with_continuous_palette(self):
         n_categories = 512
@@ -978,11 +978,11 @@ class TestSpectraFramePlot:
             data=pd.DataFrame({"group": [f"group_{i}" for i in range(n_categories)]}),
         )
 
-        fig, axs = frame.plot(colors="group", palette="viridis", legend=False)
+        fig, ax = frame.plot(hue="group", palette="viridis", legend=False)
 
         try:
-            assert axs.shape == (1, 1)
-            assert len(axs[0, 0].lines) == n_categories
+            assert fig.axes == [ax]
+            assert len(ax.lines) == n_categories
         finally:
             plt.close(fig)
 

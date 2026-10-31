@@ -9,12 +9,12 @@ import numpy as np
 import pandas as pd
 import scipy
 import pybaselines
-import matplotlib.pyplot as plt
-from matplotlib.colors import rgb2hex
-from matplotlib.lines import Line2D
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 from .baselines import rubberband
 from .peaks import around_max_peak_fit
+from .plotting import plot_spectra
 
 __all__ = ["SpectraFrame"]
 
@@ -2033,131 +2033,76 @@ class SpectraFrame:
 
     # ----------------------------------------------------------------------
     # Plotting
-    def _parse_string_or_vector_param(self, param: Union[str, ArrayLike]) -> pd.Series:
-        if isinstance(param, str) and (param == "index"):
-            return pd.Series(self.data.index)
-
-        if isinstance(param, str) and (param in self.data.columns):
+    def _resolve_plot_param(self, param: str | ArrayLike | None) -> pd.Series | None:
+        """Resolve a metadata column, index, or positional vector for plotting."""
+        if param is None:
+            return None
+        if isinstance(param, str):
+            if param == "index":
+                return pd.Series(self.data.index, name=self.data.index.name)
+            if param not in self.data.columns:
+                raise KeyError(f"Unknown metadata column: {param!r}.")
             return self.data[param]
 
-        if len(param) == self.nspc:
-            return pd.Series(param, index=self.data.index)
-
-        raise TypeError(
-            "Invalid parameter. It must be either 'index' or data column name, or "
-            "array-like (i.e. np.array, list) of lenght equal to number of spectra."
-        )
-
-    def _prepare_plot_param(self, param: Union[None, str, ArrayLike]) -> pd.Series:
-        if param is None:
-            param = pd.Series(
-                ["dummy"] * self.nspc, index=self.data.index, dtype="category"
-            )
-        else:
-            param = self._parse_string_or_vector_param(param)
-
-        param = (
-            param.astype("category")
-            .cat.add_categories("NA")
-            .fillna("NA")
-            .cat.remove_unused_categories()
-        )
-
-        return param
+        # Ignore vector indices while retaining names and categorical dtypes.
+        if np.ndim(param) != 1:
+            raise ValueError("Plot membership and hue must be 1D vectors.")
+        if len(param) != self.nspc:
+            raise ValueError(f"Plot membership and hue must have length {self.nspc}.")
+        return pd.Series(param).reset_index(drop=True)
 
     def plot(
         self,
-        rows=None,
-        columns=None,
-        colors=None,
-        palette: Union[list[str], str, None] = None,
-        fig=None,
+        *,
+        row: str | ArrayLike | None = None,
+        col: str | ArrayLike | None = None,
+        hue: str | ArrayLike | None = None,
         **kwargs: Any,
-    ):
-        # Split **kwargs
-        # TODO: Either add different kw params like https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.subplots.html
-        # or infer from the name of kwarg where to put it.
-        show_legend = kwargs.get("legend", colors is not None)
-        sharex = kwargs.get("sharex", True)
-        sharey = kwargs.get("sharey", True)
+    ) -> tuple[Figure, Axes | np.ndarray]:
+        """Plot spectra using metadata names or positional grouping vectors.
 
-        # Convert to series all 'string or vector' params
-        rows_series = self._prepare_plot_param(rows)
-        cols_series = self._prepare_plot_param(columns)
-        colorby_series = self._prepare_plot_param(colors)
+        Parameters
+        ----------
+        row, col, hue : str or array-like, optional
+            Metadata column names, "index" for the metadata index, or vectors
+            containing one value per spectrum. Vector indices are ignored;
+            names and categorical order are retained. Row and column values
+            select facets. Numeric hue is continuous by default; use
+            color_type="discrete" for numeric categories.
+        **kwargs
+            Additional arguments to :func:`pyspc.plotting.plot_spectra`, including
+            palette, col_wrap, bands, title_formatter, x_breaks, tick spacing,
+            and a supplied single ax. Spectral values and coordinates always
+            come from this frame's spc and wl arrays.
 
-        nrows = len(rows_series.cat.categories)
-        ncols = len(cols_series.cat.categories)
-        ncolors = len(colorby_series.cat.categories)
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            Figure containing the spectra and any hue colorbar.
+        ax : matplotlib.axes.Axes or numpy.ndarray of Axes
+            One axis without faceting; a 2D axes array when row or col is given.
+            Matches the return value of plot_spectra.
 
-        # Prepare colors
-        if palette is None:
-            palette = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-            if ncolors > len(palette):
-                palette = "viridis"
-
-        if isinstance(palette, str):
-            palette = [
-                rgb2hex(plt.get_cmap(palette, ncolors)(i)) for i in range(ncolors)
-            ]
-        assert isinstance(palette, list)
-        if len(palette) == 0:
-            raise ValueError("Palette must contain at least one color.")
-
-        color_categories = list(colorby_series.cat.categories)
-        category_colors = [palette[i % len(palette)] for i in range(ncolors)]
-        cmap = dict(zip(color_categories, category_colors))
-        cmap.update({"NA": "gray"})
-        colors_series = colorby_series.map(cmap).astype(str)
-
-        # Get the figure and the axes for plot
-        if fig is None:
-            fig, axs = plt.subplots(
-                nrows,
-                ncols,
-                squeeze=False,
-                sharex=sharex,
-                sharey=sharey,
-                layout="tight",
-            )
-        else:
-            axs = np.array(fig.get_axes()).reshape((nrows, ncols))
-
-        # Prepare legend lines if needed
-        legend_lines = [
-            Line2D([0], [0], color=cmap[category], lw=4)
-            for category in color_categories
-        ]
-
-        # For each combination of row and column categories
-        for i, vrow in enumerate(rows_series.cat.categories):
-            for j, vcol in enumerate(cols_series.cat.categories):
-                # Filter all spectra related to the current subplot
-                rowfilter = np.array(rows_series == vrow) & np.array(
-                    cols_series == vcol
-                )
-                if np.any(rowfilter):
-                    subdf = pd.DataFrame(self.spc[rowfilter, :], columns=self.wl)
-                    subdf.T.plot(
-                        kind="line",
-                        ax=axs[i, j],
-                        color=colors_series[rowfilter],
-                        **kwargs,
-                    )
-
-                # Add legend if needed
-                if show_legend:
-                    axs[i, j].legend(legend_lines, colorby_series.cat.categories)
-                else:
-                    axs[i, j].legend().set_visible(False)
-
-                # For the first rows and columns set titles
-                if (i == 0) and (columns is not None):
-                    axs[i, j].set_title(str(vcol))
-                if (j == 0) and (rows is not None):
-                    axs[i, j].set_ylabel(str(vrow))
-
-        return fig, axs
+        Examples
+        --------
+        >>> import matplotlib.pyplot as plt
+        >>> sf = SpectraFrame(
+        ...     [[1, 2], [3, 4]], wl=[400, 600],
+        ...     data=pd.DataFrame({"group": ["A", "B"]})
+        ... )
+        >>> fig, axes = sf.plot(col="group", hue="group")
+        >>> axes.shape
+        (1, 2)
+        >>> plt.close(fig)
+        """
+        return plot_spectra(
+            self.spc,
+            x=self.wl,
+            row=self._resolve_plot_param(row),
+            col=self._resolve_plot_param(col),
+            hue=self._resolve_plot_param(hue),
+            **kwargs,
+        )
 
     # ----------------------------------------------------------------------
     def _to_print_dataframe(self) -> pd.DataFrame:
